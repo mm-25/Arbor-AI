@@ -1,0 +1,11 @@
+{
+  "name": "MapMind Import",
+  "id": "mapmind-import",
+  "api": "1.0.0",
+  "main": "code.js",
+  "capabilities": [],
+  "enableProposedApi": false,
+  "editorType": ["figma", "figjam"],
+  "ui": "ui.html",
+  "networkAccess": { "allowedDomains": ["none"] }
+}

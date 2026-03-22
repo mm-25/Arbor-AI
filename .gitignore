@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# figma plugin build output & deps
+/figma-plugin/node_modules
+/figma-plugin/code.js

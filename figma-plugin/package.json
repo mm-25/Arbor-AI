@@ -1,0 +1,16 @@
+{
+  "name": "mapmind-figma-plugin",
+  "version": "1.0.0",
+  "description": "Figma plugin to import mind map data from MapMind",
+  "scripts": {
+    "build": "esbuild code.ts --bundle --outfile=code.js --target=es6",
+    "watch": "esbuild code.ts --bundle --outfile=code.js --target=es6 --watch",
+    "build:tsc": "tsc --noEmit && esbuild code.ts --bundle --outfile=code.js --target=es6"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.100.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}
