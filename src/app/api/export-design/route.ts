@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
     if (conversation?.length > 0) {
       const convoText = conversation
         .map((m: { role: string; content: string }) =>
-          `**${m.role === "user" ? "User" : "MapMind"}**: ${m.content}`
+          `**${m.role === "user" ? "User" : "Arbor AI"}**: ${m.content}`
         )
         .join("\n\n");
       conversationSection = `## Conversation\n\n${convoText}`;

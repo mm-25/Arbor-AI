@@ -95,15 +95,15 @@
 </head>
 <body>
 
-<h1>MapMind Import</h1>
+<h1>Arbor AI Import</h1>
 
 <p class="instructions">
-  Copy the mind map data from MapMind
+  Copy the mind map data from Arbor AI
   (<strong>Export &rarr; Figma &rarr; Copy for Figma Plugin</strong>),
   then paste it below.
 </p>
 
-<textarea id="json-input" placeholder='{"appName":"MapMind","version":1,"nodes":[...],"edges":[...]}'></textarea>
+<textarea id="json-input" placeholder='{"appName":"Arbor AI","version":1,"nodes":[...],"edges":[...]}'></textarea>
 
 <div id="preview" class="preview"></div>
 
@@ -139,10 +139,10 @@
       return;
     }
 
-    if (data.appName !== "MapMind") {
+    if (data.appName !== "Arbor AI") {
       textarea.classList.add("error");
       preview.classList.add("error");
-      preview.textContent = 'Missing or incorrect "appName" — expected "MapMind".';
+      preview.textContent = 'Missing or incorrect "appName" — expected "Arbor AI".';
       return;
     }
 

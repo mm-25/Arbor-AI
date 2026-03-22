@@ -1,4 +1,4 @@
-// MapMind Import — Figma Plugin (main thread)
+// Arbor AI Import — Figma Plugin (main thread)
 // Works in both Figma Design files and FigJam.
 // - Figma Design: frames with auto-layout + vector arrow paths
 // - FigJam: frames with auto-layout + native connectors
@@ -301,7 +301,7 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
 
     if (allCreated.length > 0) {
       const group = figma.group(allCreated, figma.currentPage);
-      group.name = `MapMind — ${data.nodes.length} nodes`;
+      group.name = `Arbor AI — ${data.nodes.length} nodes`;
       figma.viewport.scrollAndZoomIntoView([group]);
     }
 

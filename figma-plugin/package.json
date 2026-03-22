@@ -1,7 +1,7 @@
 {
-  "name": "mapmind-figma-plugin",
+  "name": "arbor-ai-figma-plugin",
   "version": "1.0.0",
-  "description": "Figma plugin to import mind map data from MapMind",
+  "description": "Figma plugin to import mind map data from Arbor AI",
   "scripts": {
     "build": "esbuild code.ts --bundle --outfile=code.js --target=es6",
     "watch": "esbuild code.ts --bundle --outfile=code.js --target=es6 --watch",

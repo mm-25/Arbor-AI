@@ -68,33 +68,7 @@ export default function NodeContextMenu({
           <span className="ml-auto text-[10px] text-gray-400">⌘C</span>
         </button>
 
-        <div className="h-px bg-gray-100 my-1" />
-
-        {/* Generate Wireframe */}
-        <button
-          onClick={() => {
-            onGenerateWireframe();
-            onClose();
-          }}
-          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-colors text-left"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="shrink-0"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-            <line x1="3" y1="9" x2="21" y2="9" />
-            <line x1="9" y1="21" x2="9" y2="9" />
-          </svg>
-          Generate Wireframe
-        </button>
+        {/* Generate Wireframe — hidden while automotive vertical is in development */}
       </div>
     </div>
   );

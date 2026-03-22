@@ -616,7 +616,7 @@ export default function ChatPanel() {
       <div className="flex items-center justify-between p-3 border-b shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-green-500" />
-          <span className="text-sm font-semibold text-gray-700">MapMind</span>
+          <span className="text-sm font-semibold text-gray-700">Arbor AI</span>
         </div>
         <button
           onClick={() => setCollapsed(true)}
@@ -633,7 +633,7 @@ export default function ChatPanel() {
       <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
         {messages.length === 0 && (
           <div className="text-center text-gray-400 text-sm py-8">
-            <p className="font-medium text-gray-500 mb-1">Hi, I&apos;m MapMind</p>
+            <p className="font-medium text-gray-500 mb-1">Hi, I&apos;m Arbor AI</p>
             <p>Tell me about the system, flow, or process you&apos;re thinking about. I&apos;ll help you think through it.</p>
             <p className="mt-2 text-xs">When we&apos;re ready, hit <strong>Generate Map</strong> to visualize it.</p>
           </div>

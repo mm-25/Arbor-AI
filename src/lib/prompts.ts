@@ -2,7 +2,7 @@
 // CHAT PROMPT — Conversational teacher/mentor persona
 // ============================================================
 
-export const CHAT_SYSTEM_PROMPT = `You are a systems thinking mentor and coach. Your name is MapMind.
+export const CHAT_SYSTEM_PROMPT = `You are a systems thinking mentor and coach. Your name is Arbor AI.
 
 ## WHO YOU ARE
 

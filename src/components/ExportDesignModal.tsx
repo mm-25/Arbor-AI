@@ -137,7 +137,7 @@ export default function ExportDesignModal({
 
       const a = document.createElement("a");
       a.href = dataUrl;
-      a.download = "mindmap-diagram.png";
+      a.download = "arbor-ai-diagram.png";
       a.click();
     } catch (err) {
       // Attempt to restore viewport on error
@@ -173,7 +173,7 @@ export default function ExportDesignModal({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "mapmind-export.json";
+    a.download = "arbor-ai-export.json";
     a.click();
     URL.revokeObjectURL(url);
   }, [nodes, edges]);
@@ -239,7 +239,7 @@ export default function ExportDesignModal({
                 <div className="text-center py-8">
                   <p className="text-sm text-gray-500 mb-3">
                     Generate a system design document from your mind map and
-                    conversation with MapMind.
+                    conversation with Arbor AI.
                   </p>
                   <p className="text-xs text-gray-400 mb-4">
                     The AI will analyze both the graph structure and your chat
@@ -454,7 +454,7 @@ export default function ExportDesignModal({
                         </button>
                       </div>
                       <p className="text-[10px] text-gray-400 leading-relaxed">
-                        Open the MapMind Import plugin in Figma, paste the copied JSON, and click Import.
+                        Open the Arbor AI Import plugin in Figma, paste the copied JSON, and click Import.
                         The plugin creates frames, text labels, and connector arrows preserving your graph structure.
                       </p>
                     </div>
@@ -530,11 +530,11 @@ export default function ExportDesignModal({
                     <ol className="mt-2 space-y-1.5 pl-4 list-decimal text-[11px] leading-relaxed">
                       <li>
                         Download the <code className="bg-gray-100 px-1 rounded">figma-plugin</code> folder
-                        from the MapMind project
+                        from the Arbor AI project
                       </li>
                       <li>In Figma, go to <strong>Plugins &rarr; Development &rarr; Import plugin from manifest...</strong></li>
                       <li>Select the <code className="bg-gray-100 px-1 rounded">manifest.json</code> file from the downloaded folder</li>
-                      <li>Run the plugin: <strong>Plugins &rarr; Development &rarr; MapMind Import</strong></li>
+                      <li>Run the plugin: <strong>Plugins &rarr; Development &rarr; Arbor AI Import</strong></li>
                       <li>Copy the JSON from here and paste it into the plugin</li>
                     </ol>
                   </details>

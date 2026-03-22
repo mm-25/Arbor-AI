@@ -1,6 +1,6 @@
 {
-  "name": "MapMind Import",
-  "id": "mapmind-import",
+  "name": "Arbor AI Import",
+  "id": "arbor-ai-import",
   "api": "1.0.0",
   "main": "code.js",
   "capabilities": [],

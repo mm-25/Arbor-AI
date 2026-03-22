@@ -12,7 +12,7 @@ import { NODE_TYPE_CONFIGS } from "@/components/nodes/node-config";
 // ── JSON export (for Figma plugin) ─────────────────────────────────────────
 
 export interface FigmaExportPayload {
-  appName: "MapMind";
+  appName: "Arbor AI";
   version: 1;
   exportedAt: string;
   nodes: FigmaExportNode[];
@@ -41,7 +41,7 @@ export function graphToFigmaJSON(
   edges: MindMapEdge[]
 ): FigmaExportPayload {
   return {
-    appName: "MapMind",
+    appName: "Arbor AI",
     version: 1,
     exportedAt: new Date().toISOString(),
     nodes: nodes.map((n) => {

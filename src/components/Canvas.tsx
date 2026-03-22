@@ -515,39 +515,16 @@ export default function Canvas() {
         </ReactFlow>
       </div>
 
-      {/* Design view */}
-      {viewMode === "design" && <DesignView />}
+      {/* Design view — hidden while automotive vertical is in development */}
+      {/* {viewMode === "design" && <DesignView />} */}
 
-      {/* View mode toggle — bottom center */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
+      {/* View mode toggle — hidden while automotive vertical is in development */}
+      {/* <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
         <div className="bg-white/95 backdrop-blur-sm border rounded-full shadow-lg p-1 flex items-center gap-0.5">
-          <button
-            onClick={() => setViewMode("system")}
-            className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
-              viewMode === "system"
-                ? "bg-gray-900 text-white shadow-sm"
-                : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-            }`}
-          >
-            System
-          </button>
-          <button
-            onClick={() => setViewMode("design")}
-            className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all relative ${
-              viewMode === "design"
-                ? "bg-gray-900 text-white shadow-sm"
-                : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-            }`}
-          >
-            Design
-            {wireframeStore.wireframes.length > 0 && viewMode !== "design" && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
-                {wireframeStore.wireframes.length}
-              </span>
-            )}
-          </button>
+          <button onClick={() => setViewMode("system")} ...>System</button>
+          <button onClick={() => setViewMode("design")} ...>Design</button>
         </div>
-      </div>
+      </div> */}
 
       {/* Node context menu */}
       {contextMenu && (

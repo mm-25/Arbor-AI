@@ -199,7 +199,7 @@ export default function Sidebar() {
         {/* Header */}
         <div className="flex items-center justify-between p-2.5 border-b shrink-0">
           <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-            MindMap
+            Arbor AI
           </span>
           <button
             onClick={() => setCollapsed(true)}

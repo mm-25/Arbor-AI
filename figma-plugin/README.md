@@ -1,10 +1,10 @@
-# MapMind Import — Figma Plugin
+# Arbor AI Import — Figma Plugin
 
-Import mind map data from the MapMind app directly into Figma as styled frames with connectors.
+Import mind map data from the Arbor AI app directly into Figma as styled frames with connectors.
 
 ## What it does
 
-- Reads a JSON payload exported from MapMind
+- Reads a JSON payload exported from Arbor AI
 - Creates a Figma frame for each node with auto-layout, rounded corners, and colour-coded backgrounds based on node type (actor, process, decision, outcome, problem)
 - Draws connector arrows between nodes based on edges
 - Places edge labels as text near the midpoint of each connector
@@ -33,8 +33,8 @@ npm run watch
 
 ## Usage
 
-1. In MapMind, go to **Export > Figma > Copy for Figma Plugin**
-2. In Figma, run the **MapMind Import** plugin (Plugins > MapMind Import)
+1. In Arbor AI, go to **Export > Figma > Copy for Figma Plugin**
+2. In Figma, run the **Arbor AI Import** plugin (Plugins > Arbor AI Import)
 3. Paste the copied JSON into the text area
 4. Click **Import**
 

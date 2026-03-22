@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MindMap — Systems Thinking Tool",
-  description: "Visual mind mapping tool for systems thinking and brainstorming",
+  title: "Arbor AI — Systems Thinking Tool",
+  description: "AI-powered systems thinking and architecture tool for engineering teams",
 };
 
 export default function RootLayout({
