@@ -9,6 +9,36 @@ import { useHistoryStore } from "@/store/history-store";
 import { Button } from "@/components/ui/button";
 import ExportDesignModal from "./ExportDesignModal";
 
+function ShapePreview({ shape, color }: { shape: string; color: string }) {
+  const size = 18;
+  switch (shape) {
+    case "circle":
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <circle cx="9" cy="9" r="7" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+    case "diamond":
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <polygon points="9,1 17,9 9,17 1,9" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+    case "rounded-rect":
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <rect x="1" y="4" width="16" height="10" rx="5" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+    default: // rectangle
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <rect x="1" y="4" width="16" height="10" rx="2" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+  }
+}
+
 function DraggableNodeButton({ config }: { config: NodeTypeConfig }) {
   const onDragStart = useCallback(
     (event: DragEvent) => {
@@ -22,14 +52,10 @@ function DraggableNodeButton({ config }: { config: NodeTypeConfig }) {
     <div
       draggable
       onDragStart={onDragStart}
-      className="flex items-center gap-2 px-3 py-2 rounded-lg border-2 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow select-none"
-      style={{
-        backgroundColor: config.bgColor,
-        borderColor: config.borderColor,
-      }}
+      className="flex items-center gap-2 px-3 py-2 rounded-lg border cursor-grab active:cursor-grabbing hover:shadow-md hover:border-gray-300 transition-all select-none bg-white"
     >
-      <span className="text-sm">{config.icon}</span>
-      <span className="text-xs font-medium" style={{ color: config.color }}>
+      <ShapePreview shape={config.shape} color={config.borderColor} />
+      <span className="text-xs font-medium text-gray-600">
         {config.label}
       </span>
     </div>

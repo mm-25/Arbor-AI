@@ -125,6 +125,21 @@
   }
 }
 
+/* Connection handles — hidden by default, visible on node hover */
+.react-flow__node .node-handle {
+  opacity: 0 !important;
+  transition: opacity 0.15s ease !important;
+}
+.react-flow__node:hover .node-handle {
+  opacity: 1 !important;
+}
+
+/* Tidy Up / bulk layout animation — only active while the flag in
+   history-store is true. Scoped so normal dragging is NOT animated. */
+[data-animating-layout="true"] .react-flow__node {
+  transition: transform 350ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 /* Proposal highlight animations — nodes */
 @keyframes proposal-pulse-update {
   0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.5); }

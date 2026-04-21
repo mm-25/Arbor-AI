@@ -13,13 +13,16 @@ import {
 } from "@xyflow/react";
 import type { Proposal } from "./proposal-store";
 import { useHistoryStore } from "./history-store";
+import { placeNewNodesIncrementally } from "@/lib/incremental-layout";
 
-export type NodeType = "actor" | "process" | "decision" | "outcome" | "problem";
+export type NodeType = "rectangle" | "rounded-rect" | "circle" | "diamond";
 
 export interface MindMapNodeData {
   label: string;
   type: NodeType;
   source: "manual" | "text" | "voice";
+  icon?: string;
+  color?: string;
   [key: string]: unknown;
 }
 
@@ -36,6 +39,7 @@ interface MindMapState {
   addNodesAndEdges: (nodes: MindMapNode[], edges: MindMapEdge[]) => void;
   setNodesAndEdges: (nodes: MindMapNode[], edges: MindMapEdge[], skipHistory?: boolean) => void;
   updateNodeLabel: (nodeId: string, label: string) => void;
+  updateNodeStyle: (nodeId: string, style: { icon?: string; color?: string; type?: NodeType }) => void;
   updateEdgeLabel: (edgeId: string, label: string) => void;
   deleteSelected: () => void;
   clear: () => void;
@@ -169,6 +173,25 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
     });
   },
 
+  updateNodeStyle: (nodeId, style) => {
+    pushUndo();
+    set({
+      nodes: get().nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                ...(style.icon !== undefined && { icon: style.icon }),
+                ...(style.color !== undefined && { color: style.color }),
+                ...(style.type !== undefined && { type: style.type }),
+              },
+            }
+          : n
+      ),
+    });
+  },
+
   updateEdgeLabel: (edgeId, label) => {
     pushUndo();
     set({
@@ -287,18 +310,26 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
       });
     }
 
-    // 3. Add new nodes with layout positions
-    const existingCount = updatedNodes.length;
-    const newNodes: MindMapNode[] = proposal.add_nodes.map((n, i) => ({
-      id: n.id,
-      type: "mindmap",
-      position: {
-        x: 100 + ((existingCount + i) % 4) * 250,
-        y: 100 + Math.floor((existingCount + i) / 4) * 150,
-      },
-      data: {
+    // 3. Add new nodes using incremental placement — existing node positions
+    // are preserved exactly; each new node lands next to an anchor it's
+    // connected to via the proposal's edges, nudged to avoid overlap.
+    const placedNewNodes = placeNewNodesIncrementally(
+      updatedNodes,
+      proposal.add_nodes.map((n) => ({
+        id: n.id,
         label: n.label,
         type: n.type as NodeType,
+      })),
+      proposal.add_edges.map((e) => ({ source: e.source, target: e.target })),
+      "LR"
+    );
+    const newNodes: MindMapNode[] = placedNewNodes.map((n) => ({
+      id: n.id,
+      type: "mindMapNode",
+      position: n.position,
+      data: {
+        label: n.label,
+        type: n.type,
         source: "text" as const,
       },
     }));

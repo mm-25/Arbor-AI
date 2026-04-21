@@ -6,8 +6,8 @@
  * 2. Mermaid.js – for pasting into FigJam diagrams
  */
 
-import type { MindMapNode, MindMapEdge } from "@/store/mindmap-store";
-import { NODE_TYPE_CONFIGS } from "@/components/nodes/node-config";
+import type { MindMapNode, MindMapEdge, NodeType } from "@/store/mindmap-store";
+import { getNodeVisualConfig } from "@/components/nodes/node-config";
 
 // ── JSON export (for Figma plugin) ─────────────────────────────────────────
 
@@ -45,16 +45,16 @@ export function graphToFigmaJSON(
     version: 1,
     exportedAt: new Date().toISOString(),
     nodes: nodes.map((n) => {
-      const config = NODE_TYPE_CONFIGS[n.data.type] ?? NODE_TYPE_CONFIGS.process;
+      const vis = getNodeVisualConfig(n.data.type, n.data.color, n.data.icon);
       return {
         id: n.id,
         label: n.data.label,
         type: n.data.type,
         x: Math.round(n.position.x),
         y: Math.round(n.position.y),
-        color: config.color,
-        bgColor: config.bgColor,
-        icon: config.icon,
+        color: vis.color,
+        bgColor: vis.bgColor,
+        icon: vis.icon,
       };
     }),
     edges: edges.map((e) => ({
@@ -77,27 +77,23 @@ function mermaidLabel(s: string): string {
 }
 
 /**
- * Map node type → Mermaid shape brackets.
- * Using standard Mermaid flowchart shapes:
- *   actor    → circle ((...))
- *   process  → rectangle [...]
- *   decision → diamond {...}
- *   outcome  → rounded-rect (...)
- *   problem  → hexagon {{...}}
+ * Map node shape → Mermaid shape brackets.
+ *   circle       → ((...))
+ *   rectangle    → [...]
+ *   diamond      → {...}
+ *   rounded-rect → (...)
  */
 function mermaidShape(id: string, label: string, type: string): string {
   const l = mermaidLabel(label);
   switch (type) {
-    case "actor":
+    case "circle":
       return `${id}((${l}))`;
-    case "process":
+    case "rectangle":
       return `${id}[${l}]`;
-    case "decision":
+    case "diamond":
       return `${id}{${l}}`;
-    case "outcome":
+    case "rounded-rect":
       return `${id}(${l})`;
-    case "problem":
-      return `${id}{{${l}}}`;
     default:
       return `${id}[${l}]`;
   }
@@ -123,19 +119,10 @@ export function graphToMermaid(
     }
   }
 
-  // Style classes
-  const nodesByType = new Map<string, string[]>();
+  // Style classes — group by visual appearance
   for (const n of nodes) {
-    const list = nodesByType.get(n.data.type) || [];
-    list.push(n.id);
-    nodesByType.set(n.data.type, list);
-  }
-
-  for (const [type, ids] of nodesByType) {
-    const config = NODE_TYPE_CONFIGS[type as keyof typeof NODE_TYPE_CONFIGS];
-    if (config) {
-      lines.push(`  style ${ids.join(",")} fill:${config.bgColor},stroke:${config.color},color:${config.color}`);
-    }
+    const vis = getNodeVisualConfig(n.data.type, n.data.color, n.data.icon);
+    lines.push(`  style ${n.id} fill:${vis.bgColor},stroke:${vis.color},color:${vis.color}`);
   }
 
   return lines.join("\n");

@@ -7,6 +7,7 @@ import {
   Controls,
   MiniMap,
   BackgroundVariant,
+  ConnectionMode,
   SelectionMode,
   useReactFlow,
   type NodeMouseHandler,
@@ -18,7 +19,7 @@ import { useChatStore } from "@/store/chat-store";
 import { useHistoryStore } from "@/store/history-store";
 import { useWireframeStore } from "@/store/wireframe-store";
 import MindMapNodeComponent from "./nodes/MindMapNode";
-import { NODE_TYPE_CONFIGS } from "./nodes/node-config";
+import { NODE_TYPE_CONFIGS, getNodeVisualConfig } from "./nodes/node-config";
 import Sidebar from "./Sidebar";
 import ChatPanel from "./ChatPanel";
 import EditableEdge from "./edges/EditableEdge";
@@ -41,8 +42,8 @@ function getNextNodeId() {
 
 // Generic node labels that need clarifying questions before wireframe generation
 const GENERIC_LABELS = new Set([
-  "Actor", "Process", "Decision", "Outcome", "Problem",
-  "actor", "process", "decision", "outcome", "problem",
+  "Rectangle", "Rounded", "Circle", "Diamond",
+  "rectangle", "rounded", "circle", "diamond",
   "New Node", "Untitled",
 ]);
 
@@ -79,6 +80,7 @@ export default function Canvas() {
   } = useChatStore();
 
   const clearHistory = useHistoryStore((s) => s.clear);
+  const isAnimatingLayout = useHistoryStore((s) => s._isAnimatingLayout);
   const wireframeStore = useWireframeStore();
 
   // View mode: "system" (mind map) or "design" (wireframes)
@@ -323,6 +325,14 @@ export default function Canvas() {
       // Copy / Paste — skip when user is typing in an input
       if (inText) return;
 
+      if (mod && e.key === "a") {
+        e.preventDefault();
+        const { nodes: allNodes, edges: allEdges, onNodesChange: nc, onEdgesChange: ec } = useMindMapStore.getState();
+        nc(allNodes.map((n) => ({ type: "select" as const, id: n.id, selected: true })));
+        ec(allEdges.map((edge) => ({ type: "select" as const, id: edge.id, selected: true })));
+        return;
+      }
+
       if (mod && e.key === "c") {
         const selected = useMindMapStore.getState().nodes.filter((n) => n.selected);
         if (selected.length > 0) {
@@ -359,7 +369,7 @@ export default function Canvas() {
         id: getNextNodeId(),
         type: "mindMapNode",
         position,
-        data: { label: NODE_TYPE_CONFIGS[type].label, type, source: "manual" },
+        data: { label: "", type, source: "manual" },
       });
     },
     [screenToFlowPosition, addNode]
@@ -472,7 +482,11 @@ export default function Canvas() {
   ]);
 
   return (
-    <div ref={reactFlowWrapper} className="w-full h-screen relative">
+    <div
+      ref={reactFlowWrapper}
+      className="w-full h-screen relative"
+      data-animating-layout={isAnimatingLayout ? "true" : "false"}
+    >
       <Sidebar />
       <ChatPanel />
 
@@ -492,6 +506,7 @@ export default function Canvas() {
           onPaneContextMenu={onPaneContextMenu}
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
+          connectionMode={ConnectionMode.Loose}
           fitView
           panOnDrag={[1, 2]}
           panOnScroll
@@ -507,8 +522,8 @@ export default function Canvas() {
           <Controls />
           <MiniMap
             nodeColor={(node) => {
-              const data = node.data as unknown as { type: NodeType };
-              return NODE_TYPE_CONFIGS[data.type]?.color || "#6b7280";
+              const data = node.data as unknown as { type: NodeType; color?: string };
+              return getNodeVisualConfig(data.type, data.color).color;
             }}
             maskColor="rgba(0,0,0,0.1)"
           />

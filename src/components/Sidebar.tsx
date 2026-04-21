@@ -7,7 +7,41 @@ import { useMindMapStore } from "@/store/mindmap-store";
 import { useChatStore } from "@/store/chat-store";
 import { useHistoryStore } from "@/store/history-store";
 import { Button } from "@/components/ui/button";
+import { getLayoutedElements } from "@/lib/auto-layout";
 import ExportDesignModal from "./ExportDesignModal";
+
+/** Above this node count, skip Tidy Up animation — too many things moving at once. */
+const TIDY_UP_ANIMATION_THRESHOLD = 30;
+
+function ShapePreview({ shape, color }: { shape: string; color: string }) {
+  const size = 18;
+  switch (shape) {
+    case "circle":
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <circle cx="9" cy="9" r="7" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+    case "diamond":
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <polygon points="9,1 17,9 9,17 1,9" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+    case "rounded-rect":
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <rect x="1" y="4" width="16" height="10" rx="5" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+    default: // rectangle
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18">
+          <rect x="1" y="4" width="16" height="10" rx="2" fill="none" stroke={color} strokeWidth="2" />
+        </svg>
+      );
+  }
+}
 
 function DraggableNodeButton({ config }: { config: NodeTypeConfig }) {
   const onDragStart = useCallback(
@@ -22,14 +56,10 @@ function DraggableNodeButton({ config }: { config: NodeTypeConfig }) {
     <div
       draggable
       onDragStart={onDragStart}
-      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border-2 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow select-none"
-      style={{
-        backgroundColor: config.bgColor,
-        borderColor: config.borderColor,
-      }}
+      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border cursor-grab active:cursor-grabbing hover:shadow-md hover:border-gray-300 transition-all select-none bg-white"
     >
-      <span className="text-xs">{config.icon}</span>
-      <span className="text-[11px] font-medium" style={{ color: config.color }}>
+      <ShapePreview shape={config.shape} color={config.borderColor} />
+      <span className="text-[11px] font-medium text-gray-600">
         {config.label}
       </span>
     </div>
@@ -124,7 +154,7 @@ function ChatHistoryItem({
 }
 
 export default function Sidebar() {
-  const { saveToStorage, clear, nodes, edges, performUndo, performRedo } = useMindMapStore();
+  const { saveToStorage, clear, nodes, edges, performUndo, performRedo, setNodesAndEdges } = useMindMapStore();
   const {
     sessions,
     activeSessionId,
@@ -173,6 +203,40 @@ export default function Sidebar() {
     const { nodes: n, edges: e } = useMindMapStore.getState();
     saveGraphToSession(n, e);
   }, [performRedo, saveGraphToSession]);
+
+  const handleTidyUp = useCallback(() => {
+    const { nodes: currentNodes, edges: currentEdges } = useMindMapStore.getState();
+    if (currentNodes.length === 0) return;
+
+    // Reset positions so auto-layout's "only layout AI or new nodes" rule
+    // treats every node as eligible for repositioning (manual-source nodes
+    // would otherwise be preserved).
+    const resetNodes = currentNodes.map((n) => ({
+      ...n,
+      position: { x: 0, y: 0 },
+      // Also strip source flag so auto-layout can't decide to skip
+      data: { ...n.data, source: "text" as const },
+    }));
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+      resetNodes,
+      currentEdges,
+      "LR"
+    );
+
+    // Restore original source so nothing downstream thinks a manual node is now AI
+    const layoutedWithOrigSource = layoutedNodes.map((n) => {
+      const orig = currentNodes.find((c) => c.id === n.id);
+      if (!orig) return n;
+      return { ...n, data: { ...n.data, source: orig.data.source } };
+    });
+
+    if (currentNodes.length <= TIDY_UP_ANIMATION_THRESHOLD) {
+      useHistoryStore.getState().triggerLayoutAnimation(400);
+    }
+
+    setNodesAndEdges(layoutedWithOrigSource, layoutedEdges);
+    saveGraphToSession(layoutedWithOrigSource, layoutedEdges);
+  }, [setNodesAndEdges, saveGraphToSession]);
 
   if (collapsed) {
     return (
@@ -251,7 +315,7 @@ export default function Sidebar() {
         {/* Node types */}
         <div className="border-t p-2 shrink-0">
           <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
-            Drag to add
+            Shapes
           </div>
           <div className="grid grid-cols-2 gap-1.5">
             {nodeTypes.map((type) => (
@@ -295,6 +359,29 @@ export default function Sidebar() {
               </svg>
             </Button>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleTidyUp}
+            className="text-[11px] h-7"
+            title="Re-arrange the map into a clean flowchart layout"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="mr-1 shrink-0"
+              aria-hidden="true"
+            >
+              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
+            </svg>
+            Tidy Up
+          </Button>
           <div className="flex gap-1.5">
             <Button
               variant="outline"

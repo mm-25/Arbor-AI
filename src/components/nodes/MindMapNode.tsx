@@ -3,12 +3,13 @@
 import { memo, useState, useCallback, useRef, useEffect } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { MindMapNodeData } from "@/store/mindmap-store";
-import { NODE_TYPE_CONFIGS } from "./node-config";
+import { getNodeVisualConfig } from "./node-config";
 import { useMindMapStore } from "@/store/mindmap-store";
+import NodeStyleToolbar from "./NodeStyleToolbar";
 
 function MindMapNodeComponent({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as MindMapNodeData;
-  const config = NODE_TYPE_CONFIGS[nodeData.type];
+  const config = getNodeVisualConfig(nodeData.type, nodeData.color, nodeData.icon);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(nodeData.label);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,7 +55,7 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
     : "";
 
   const isDiamond = config.shape === "diamond";
-  const handleClass = "!w-3 !h-3 !bg-gray-400 !border-2 !border-white";
+  const handleClass = "!w-3 !h-3 !bg-blue-500 !border-2 !border-white node-handle";
 
   if (isDiamond) {
     return (
@@ -63,6 +64,14 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
         style={{ width: 120, height: 120 }}
         onDoubleClick={handleDoubleClick}
       >
+        {selected && (
+          <NodeStyleToolbar
+            nodeId={id}
+            currentColor={nodeData.color}
+            currentIcon={nodeData.icon}
+            currentType={nodeData.type}
+          />
+        )}
         {/* Diamond shape via clip-path — no rotation needed */}
         <div
           className={`absolute inset-0 ${
@@ -114,17 +123,11 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
           )}
         </div>
 
-        {/* Handles at the actual top and bottom tips */}
-        <Handle
-          type="target"
-          position={Position.Top}
-          className={handleClass}
-        />
-        <Handle
-          type="source"
-          position={Position.Bottom}
-          className={handleClass}
-        />
+        {/* Handles at all 4 tips of the diamond */}
+        <Handle type="source" position={Position.Top} id="top" className={handleClass} />
+        <Handle type="source" position={Position.Right} id="right" className={handleClass} />
+        <Handle type="source" position={Position.Bottom} id="bottom" className={handleClass} />
+        <Handle type="source" position={Position.Left} id="left" className={handleClass} />
       </div>
     );
   }
@@ -153,11 +156,18 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
       }}
       onDoubleClick={handleDoubleClick}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        className={handleClass}
-      />
+      {selected && (
+        <NodeStyleToolbar
+          nodeId={id}
+          currentColor={nodeData.color}
+          currentIcon={nodeData.icon}
+          currentType={nodeData.type}
+        />
+      )}
+      <Handle type="source" position={Position.Top} id="top" className={handleClass} />
+      <Handle type="source" position={Position.Right} id="right" className={handleClass} />
+      <Handle type="source" position={Position.Bottom} id="bottom" className={handleClass} />
+      <Handle type="source" position={Position.Left} id="left" className={handleClass} />
 
       <div className="flex flex-col items-center gap-1 text-center">
         <span className="text-xs opacity-60 select-none">{config.icon}</span>
@@ -180,12 +190,6 @@ function MindMapNodeComponent({ id, data, selected }: NodeProps) {
           </span>
         )}
       </div>
-
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className={handleClass}
-      />
     </div>
   );
 }

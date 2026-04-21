@@ -12,12 +12,43 @@ import { processFile, isSupportedFile, formatFileSize, type Attachment } from "@
 import ReactMarkdown from "react-markdown";
 import ProposalMessage from "./ProposalMessage";
 
+const MIN_CHAT_WIDTH = 280;
+const MAX_CHAT_WIDTH = 720;
+const DEFAULT_CHAT_WIDTH = 384; // w-96
+
 export default function ChatPanel() {
   const [input, setInput] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const [chatWidth, setChatWidth] = useState(DEFAULT_CHAT_WIDTH);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Resize drag handle ────────────────────────────────────────────────────
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = chatWidth;
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const delta = startX - moveEvent.clientX; // dragging left = wider
+      setChatWidth(Math.min(MAX_CHAT_WIDTH, Math.max(MIN_CHAT_WIDTH, startWidth + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [chatWidth]);
+
+  // ── Copy message to clipboard ─────────────────────────────────────────────
+  const handleCopyMessage = useCallback((id: string, content: string) => {
+    navigator.clipboard.writeText(content).catch(() => {});
+    setCopiedMsgId(id);
+    setTimeout(() => setCopiedMsgId(null), 2000);
+  }, []);
 
   // File attachments for the current message being composed
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
@@ -83,6 +114,7 @@ export default function ChatPanel() {
 
   // Detect the first selected node as the "focused node"
   const focusedNode = nodes.find((n) => n.selected) || null;
+
 
   const handleDeselectNode = useCallback(() => {
     if (focusedNode) {
@@ -606,12 +638,19 @@ export default function ChatPanel() {
 
   return (
     <div
-      className="absolute top-4 right-4 bottom-4 z-10 w-96 bg-white/95 backdrop-blur-sm border rounded-xl shadow-lg flex flex-col"
+      className="absolute top-4 right-4 bottom-4 z-10 bg-white/95 backdrop-blur-sm border rounded-xl shadow-lg flex flex-col"
+      style={{ width: chatWidth }}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {/* Resize drag handle — left edge */}
+      <div
+        onMouseDown={handleResizeMouseDown}
+        className="absolute left-0 top-2 bottom-2 w-1 cursor-ew-resize rounded-full hover:bg-blue-400/50 transition-colors z-10 group"
+        title="Drag to resize"
+      />
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b shrink-0">
         <div className="flex items-center gap-2">
@@ -630,7 +669,7 @@ export default function ChatPanel() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
+      <div className="flex-1 overflow-y-auto p-3 space-y-5 min-h-0">
         {messages.length === 0 && (
           <div className="text-center text-gray-400 text-sm py-8">
             <p className="font-medium text-gray-500 mb-1">Hi, I&apos;m Arbor AI</p>
@@ -644,71 +683,88 @@ export default function ChatPanel() {
             <div
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
-              <div
-                className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
-                  msg.role === "user"
-                    ? "bg-blue-500 text-white rounded-br-md"
-                    : "bg-gray-100 text-gray-800 rounded-bl-md"
-                }`}
-              >
-                {/* Attachment previews in message */}
-                {msg.attachments && msg.attachments.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mb-1.5">
-                    {msg.attachments.map((att) => (
-                      <div key={att.id}>
-                        {att.type === "image" && att.previewUrl ? (
-                          <img
-                            src={att.previewUrl}
-                            alt={att.name}
-                            className="rounded-md max-h-20 max-w-[120px] object-cover border border-white/20"
-                          />
-                        ) : (
-                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] ${
-                            msg.role === "user" ? "bg-blue-400/30" : "bg-gray-200"
-                          }`}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                              <polyline points="14 2 14 8 20 8" />
-                            </svg>
-                            {att.name}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <ReactMarkdown
-                  components={{
-                    // Paragraphs
-                    p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
-                    // Bold
-                    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                    // Italic
-                    em: ({ children }) => <em>{children}</em>,
-                    // Unordered lists
-                    ul: ({ children }) => <ul className="list-disc pl-4 mb-1.5 last:mb-0 space-y-0.5">{children}</ul>,
-                    // Ordered lists
-                    ol: ({ children }) => <ol className="list-decimal pl-4 mb-1.5 last:mb-0 space-y-0.5">{children}</ol>,
-                    // List items
-                    li: ({ children }) => <li>{children}</li>,
-                    // Inline code
-                    code: ({ children }) => (
-                      <code className={`px-1 py-0.5 rounded text-xs ${
-                        msg.role === "user"
-                          ? "bg-blue-400/30"
-                          : "bg-gray-200"
-                      }`}>
-                        {children}
-                      </code>
-                    ),
-                    // Headings (used rarely but just in case)
-                    h1: ({ children }) => <p className="font-semibold mb-1">{children}</p>,
-                    h2: ({ children }) => <p className="font-semibold mb-1">{children}</p>,
-                    h3: ({ children }) => <p className="font-semibold mb-1">{children}</p>,
-                  }}
+              {/* Wrap in group so copy button can react to hover */}
+              <div className="group relative max-w-[85%]">
+                <div
+                  className={`rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                    msg.role === "user"
+                      ? "bg-blue-500 text-white rounded-br-md"
+                      : "bg-gray-100 text-gray-800 rounded-bl-md"
+                  }`}
                 >
-                  {msg.content}
-                </ReactMarkdown>
+                  {/* Attachment previews in message */}
+                  {msg.attachments && msg.attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                      {msg.attachments.map((att) => (
+                        <div key={att.id}>
+                          {att.type === "image" && att.previewUrl ? (
+                            <img
+                              src={att.previewUrl}
+                              alt={att.name}
+                              className="rounded-md max-h-20 max-w-[120px] object-cover border border-white/20"
+                            />
+                          ) : (
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] ${
+                              msg.role === "user" ? "bg-blue-400/30" : "bg-gray-200"
+                            }`}>
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                <polyline points="14 2 14 8 20 8" />
+                              </svg>
+                              {att.name}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <ReactMarkdown
+                    components={{
+                      p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+                      strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                      em: ({ children }) => <em>{children}</em>,
+                      ul: ({ children }) => <ul className="list-disc pl-4 mb-1.5 last:mb-0 space-y-0.5">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal pl-4 mb-1.5 last:mb-0 space-y-0.5">{children}</ol>,
+                      li: ({ children }) => <li>{children}</li>,
+                      code: ({ children }) => (
+                        <code className={`px-1 py-0.5 rounded text-xs ${
+                          msg.role === "user" ? "bg-blue-400/30" : "bg-gray-200"
+                        }`}>
+                          {children}
+                        </code>
+                      ),
+                      h1: ({ children }) => <p className="font-semibold mb-1">{children}</p>,
+                      h2: ({ children }) => <p className="font-semibold mb-1">{children}</p>,
+                      h3: ({ children }) => <p className="font-semibold mb-1">{children}</p>,
+                    }}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
+
+                {/* Copy button — appears on hover, below the bubble */}
+                <button
+                  onClick={() => handleCopyMessage(msg.id, msg.content)}
+                  title="Copy message"
+                  className={`absolute -bottom-5 ${msg.role === "user" ? "right-0" : "left-0"} opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[10px] text-gray-400 hover:text-gray-600 py-0.5`}
+                >
+                  {copiedMsgId === msg.id ? (
+                    <>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                      <span>Copy</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
             {/* Render proposal card if this message has a proposalId */}

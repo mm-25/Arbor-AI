@@ -13,6 +13,8 @@ interface HistoryState {
   future: GraphSnapshot[];
   _isDragging: boolean;
   _paused: boolean;
+  /** When true, nodes get CSS transitions so bulk position changes animate. */
+  _isAnimatingLayout: boolean;
 
   /**
    * Push a snapshot of the current graph state before a mutation.
@@ -37,6 +39,13 @@ interface HistoryState {
 
   setDragging: (v: boolean) => void;
   setPaused: (v: boolean) => void;
+  setAnimatingLayout: (v: boolean) => void;
+  /**
+   * Flip the animation flag on for `durationMs`, then off. Use before any
+   * bulk position mutation (Tidy Up, proposal accept) so React Flow node
+   * transforms glide to their new positions.
+   */
+  triggerLayoutAnimation: (durationMs?: number) => void;
 }
 
 export const useHistoryStore = create<HistoryState>((set, get) => ({
@@ -44,6 +53,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   future: [],
   _isDragging: false,
   _paused: false,
+  _isAnimatingLayout: false,
 
   pushSnapshot: (snapshot) => {
     if (get()._paused) return;
@@ -87,5 +97,18 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
 
   setPaused: (v) => {
     set({ _paused: v });
+  },
+
+  setAnimatingLayout: (v) => {
+    set({ _isAnimatingLayout: v });
+  },
+
+  triggerLayoutAnimation: (durationMs = 400) => {
+    set({ _isAnimatingLayout: true });
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        set({ _isAnimatingLayout: false });
+      }, durationMs);
+    }
   },
 }));
