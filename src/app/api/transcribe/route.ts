@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import Groq from "groq-sdk";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
 export async function POST(request: NextRequest) {
   try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return NextResponse.json({error: "GROQ_API_KEY is not configured for recorded voice input. Typed Claude chat remains available."}, {status: 503});
+    const groq = new Groq({apiKey});
     const formData = await request.formData();
     const audioFile = formData.get("audio") as File | null;
 

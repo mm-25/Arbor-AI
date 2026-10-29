@@ -85,133 +85,84 @@ function cleanLabel(s: string): string {
   return label.trim();
 }
 
-// ── Edge parsing ────────────────────────────────────────────────────────────
-
-/**
- * Arrow patterns we recognize (with or without labels):
- *   A --> B
- *   A -->|label| B
- *   A -- "label" --> B
- *   A ---|label| B
- *   A -- label --> B
- *   A ==> B  (thick arrow, treat same as -->)
- *   A -.-> B (dotted arrow, treat same as -->)
- */
-const ARROW_PATTERNS = [
-  // -->|label|  or  ---|label|
-  /^(.+?)\s*(?:-->|---|==>|-\.->)\s*\|(.+?)\|\s*(.+)$/,
-  // -- "label" -->
-  /^(.+?)\s*--\s*"(.+?)"\s*-->\s*(.+)$/,
-  // -- label -->  (unquoted, greedy but safe since --> is unique)
-  /^(.+?)\s*--\s+(.+?)\s+-->\s*(.+)$/,
-  // Plain arrows (no label): -->, ==>, -.->
-  /^(.+?)\s*(-->|==>|-\.->|---)\s*(.+)$/,
-];
-
-interface EdgeMatch {
-  leftRaw: string;
-  rightRaw: string;
-  label?: string;
-}
-
-function matchEdge(line: string): EdgeMatch | null {
-  for (const pattern of ARROW_PATTERNS) {
-    const m = line.match(pattern);
-    if (m) {
-      // Patterns with 3 groups where group 2 is the label
-      if (pattern === ARROW_PATTERNS[3]) {
-        // Plain arrow, no label — group 2 is the arrow itself
-        return { leftRaw: m[1].trim(), rightRaw: m[3].trim() };
-      }
-      return { leftRaw: m[1].trim(), rightRaw: m[3].trim(), label: cleanLabel(m[2]) };
+/** Split only outside shapes/quotes; punctuation inside labels is content. */
+function statements(input: string): string[] {
+  const result: string[] = [];
+  let start = 0;
+  let quote = "";
+  let depth = 0;
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i];
+    if (quote) { if (c === quote && input[i - 1] !== "\\") quote = ""; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if ("[({".includes(c)) depth++;
+    if ("])}".includes(c)) depth--;
+    if ((c === ";" || c === "\n") && depth === 0) {
+      result.push(input.slice(start, i).trim()); start = i + 1;
     }
   }
-  return null;
+  result.push(input.slice(start).trim());
+  return result;
 }
 
-// ── Main parser ─────────────────────────────────────────────────────────────
+function readNode(input: string): { raw: string; rest: string } | null {
+  const id = input.match(/^\s*([a-zA-Z_]\w*)/);
+  if (!id) return null;
+  let end = id[0].length;
+  let cursor = end;
+  while (/\s/.test(input[cursor] ?? "") && cursor < input.length) cursor++;
+  if (input[cursor] && "[({".includes(input[cursor])) {
+    let depth = 0;
+    let quote = "";
+    for (; cursor < input.length; cursor++) {
+      const c = input[cursor];
+      if (quote) { if (c === quote && input[cursor - 1] !== "\\") quote = ""; continue; }
+      if (c === '"' || c === "'") { quote = c; continue; }
+      if ("[({".includes(c)) depth++;
+      if ("])}".includes(c)) depth--;
+      if (depth === 0) { end = cursor + 1; break; }
+    }
+    if (depth !== 0) return null;
+  }
+  return { raw: input.slice(0, end).trim(), rest: input.slice(end).trim() };
+}
 
 export function parseMermaidToGraph(mermaid: string): ParsedGraph {
   const nodeMap = new Map<string, ParsedNode>();
   const edges: ParsedEdge[] = [];
   const seenEdges = new Set<string>();
-
-  const lines = mermaid.split("\n");
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-
-    // Skip empty lines, comments, directives
-    if (!line || line.startsWith("%%") || line.startsWith(":::")) continue;
-
-    // Skip graph header
-    if (/^(graph|flowchart)\s+(LR|RL|TB|TD|BT)\s*$/i.test(line)) continue;
-    // Also skip if it's just "graph" or "flowchart" alone
-    if (/^(graph|flowchart)$/i.test(line)) continue;
-
-    // Skip style/classDef/class/linkStyle lines
-    if (/^(style|classDef|class|linkStyle|click)\s+/i.test(line)) continue;
-
-    // Skip subgraph/end
-    if (/^(subgraph|end)\b/i.test(line)) continue;
-
-    // Try to parse as edge
-    const edgeMatch = matchEdge(line);
-    if (edgeMatch) {
-      // Left and right sides may contain inline node definitions
-      const leftNode = ensureNode(edgeMatch.leftRaw, nodeMap);
-      const rightNode = ensureNode(edgeMatch.rightRaw, nodeMap);
-
-      if (leftNode && rightNode) {
-        const edgeKey = `${leftNode.id}->${rightNode.id}`;
-        if (!seenEdges.has(edgeKey)) {
-          seenEdges.add(edgeKey);
-          edges.push({
-            source: leftNode.id,
-            target: rightNode.id,
-            ...(edgeMatch.label ? { label: edgeMatch.label } : {}),
-          });
-        }
+  function register(raw: string): ParsedNode | null {
+    const node = parseNodeDefinition(raw);
+    if (!node) return null;
+    // Explicit definitions always supersede bare references; a bare reference
+    // never erases an explicit label or shape.
+    if (!nodeMap.has(node.id) || raw !== node.id) nodeMap.set(node.id, node);
+    return nodeMap.get(node.id)!;
+  }
+  for (const line of statements(mermaid)) {
+    if (!line || /^(%%|```|:::)/.test(line)) continue;
+    if (/^(graph|flowchart|style|classDef|class|linkStyle|click|subgraph|end)\b/i.test(line)) continue;
+    const first = readNode(line);
+    if (!first) continue;
+    let source = register(first.raw);
+    let rest = first.rest;
+    while (source && rest) {
+      const arrow = rest.match(/^(?:-->|---|==>|-\.->)(?:\s*\|([^|]*)\|)?\s*/)
+        ?? rest.match(/^--\s+("[^"]*"|'[^']*'|.+?)\s+-->\s*/);
+      if (!arrow) break;
+      const next = readNode(rest.slice(arrow[0].length));
+      if (!next) break;
+      const target = register(next.raw);
+      if (!target) break;
+      const label = arrow[1] === undefined ? undefined : cleanLabel(arrow[1]);
+      const key = JSON.stringify([source.id, target.id, label ?? ""]);
+      if (!seenEdges.has(key)) {
+        seenEdges.add(key);
+        edges.push({source: source.id, target: target.id, ...(label ? {label} : {})});
       }
-      continue;
-    }
-
-    // Try to parse as standalone node definition
-    const nodeDef = parseNodeDefinition(line);
-    if (nodeDef && !nodeMap.has(nodeDef.id)) {
-      nodeMap.set(nodeDef.id, { id: nodeDef.id, label: nodeDef.label, type: nodeDef.type });
+      source = target;
+      rest = next.rest;
     }
   }
-
-  return {
-    nodes: Array.from(nodeMap.values()),
-    edges,
-  };
-}
-
-/**
- * Ensure a node exists in the map. If the raw string is a node definition
- * (has shape brackets), parse and register it. If it's just a bare ID,
- * register it as a process node with the ID as label.
- */
-function ensureNode(raw: string, nodeMap: Map<string, ParsedNode>): ParsedNode | null {
-  const trimmed = raw.trim();
-
-  // Try to parse as full node definition (id + shape)
-  const parsed = parseNodeDefinition(trimmed);
-  if (!parsed) return null;
-
-  // If already registered, return existing (don't overwrite with bare-id defaults)
-  const existing = nodeMap.get(parsed.id);
-  if (existing) {
-    // If existing was a bare-id default and this has real shape info, upgrade
-    if (existing.label === existing.id.replace(/_/g, " ") && parsed.label !== parsed.id.replace(/_/g, " ")) {
-      nodeMap.set(parsed.id, parsed);
-      return parsed;
-    }
-    return existing;
-  }
-
-  nodeMap.set(parsed.id, parsed);
-  return parsed;
+  return {nodes: [...nodeMap.values()], edges};
 }

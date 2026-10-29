@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import Groq from "groq-sdk";
+import { NextRequest } from "next/server";
+import { AIError, completeWithClaude } from "@/lib/claude";
+import { parseConversation, parseGraph, graphContext, errorResponse, parseRequestBody } from "@/lib/ai-contract";
 
 const EXPORT_SYSTEM_PROMPT = `You are a senior systems architect. Your job is to produce a clear, well-structured system design document in Markdown format.
 
@@ -45,81 +46,12 @@ Any unresolved topics from the conversation that need further exploration.
 
 export async function POST(request: NextRequest) {
   try {
-    const { nodes, edges, conversation } = await request.json();
-
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "GROQ_API_KEY not configured" },
-        { status: 500 }
-      );
-    }
-
-    if ((!nodes || nodes.length === 0) && (!conversation || conversation.length === 0)) {
-      return NextResponse.json(
-        { error: "Need at least a graph or conversation to generate a design document" },
-        { status: 400 }
-      );
-    }
-
-    const groq = new Groq({ apiKey });
-
-    // Format graph context
-    let graphSection = "## Graph\nNo nodes on the canvas yet.";
-    if (nodes?.length > 0) {
-      const nodeList = nodes
-        .map((n: { id: string; data: { label: string; type: string } }) =>
-          `- **${n.data.label}** (${n.data.type}) [id: ${n.id}]`
-        )
-        .join("\n");
-
-      const edgeList = (edges || [])
-        .map((e: { source: string; target: string; label?: string }) =>
-          `- ${e.source} → ${e.target}${e.label ? ` [${e.label}]` : ""}`
-        )
-        .join("\n");
-
-      graphSection = `## Graph\n\n### Nodes (${nodes.length}):\n${nodeList}\n\n### Connections (${(edges || []).length}):\n${edgeList}`;
-    }
-
-    // Format conversation
-    let conversationSection = "## Conversation\nNo conversation history.";
-    if (conversation?.length > 0) {
-      const convoText = conversation
-        .map((m: { role: string; content: string }) =>
-          `**${m.role === "user" ? "User" : "Arbor AI"}**: ${m.content}`
-        )
-        .join("\n\n");
-      conversationSection = `## Conversation\n\n${convoText}`;
-    }
-
-    const chatCompletion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: EXPORT_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `${graphSection}\n\n---\n\n${conversationSection}\n\n---\n\nGenerate the system design document in Markdown.`,
-        },
-      ],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.3,
-      max_tokens: 4096,
-    });
-
-    const content = chatCompletion.choices[0]?.message?.content;
-    if (!content) {
-      return NextResponse.json(
-        { error: "Empty response from AI" },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json({ markdown: content });
-  } catch (error) {
-    console.error("Export design error:", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+    const body = parseRequestBody(await request.json());
+    const graph = parseGraph(body.nodes, body.edges);
+    const conversation = body.conversation === undefined || (Array.isArray(body.conversation) && !body.conversation.length) ? [] : parseConversation(body.conversation);
+    if (!graph.nodes.length && !conversation.length) throw new AIError("Provide a graph or conversation to generate a report.", 400);
+    const response = await completeWithClaude({system: EXPORT_SYSTEM_PROMPT,
+      messages: [{role: "user", content: JSON.stringify({graph: JSON.parse(graphContext(graph)), conversation})}], maxTokens: 4096});
+    return Response.json({markdown: response.text, model: response.model, usage: response.usage});
+  } catch (error) {return errorResponse(error);}
 }

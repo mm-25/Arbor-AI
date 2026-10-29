@@ -7,17 +7,32 @@ export interface ProposalUpdateNode {
 }
 
 export interface ProposalRemoveEdge {
+  id?: string;
   source: string;
   target: string;
 }
 
 export interface Proposal {
   id: string;
-  add_nodes: { id: string; label: string; type: string }[];
-  add_edges: { source: string; target: string; label?: string }[];
+  add_nodes: {
+    id: string;
+    label: string;
+    type: string;
+    role?: "concept" | "question" | "suggestion";
+  }[];
+  add_edges: {
+    source: string;
+    target: string;
+    label?: string;
+    relation?: string;
+  }[];
   update_nodes: ProposalUpdateNode[];
   remove_nodes: string[];
   remove_edges: ProposalRemoveEdge[];
+  update_edges?: { id: string; label?: string; relation?: string }[];
+  layout?: import("@/lib/layout-command").LayoutCommand;
+  layoutNodeIds?: string[];
+  origin?: { sessionId: string | null; epoch: number; graph: string };
   status: "pending" | "accepted" | "rejected";
 }
 

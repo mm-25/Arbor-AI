@@ -1,6 +1,7 @@
+import { cleanSnapshot } from "@/lib/graph-snapshot";
 import { create } from "zustand";
 import type { MindMapNode, MindMapEdge } from "./mindmap-store";
-import type { Wireframe } from "./wireframe-store";
+import type { GraphSnapshot } from "./history-store";
 
 /** Lightweight attachment metadata stored per message (no heavy data in localStorage) */
 export interface MessageAttachment {
@@ -11,6 +12,8 @@ export interface MessageAttachment {
   size: number;
   /** For images: thumbnail data URI for display in chat history */
   previewUrl?: string;
+  /** Readable source text is retained so follow-up reasoning survives reload. */
+  textContent?: string;
 }
 
 export interface ChatMessage {
@@ -30,8 +33,10 @@ export interface ChatSession {
   // Graph state associated with this chat
   graphNodes: MindMapNode[];
   graphEdges: MindMapEdge[];
-  // Wireframes associated with this chat
-  wireframes: Wireframe[];
+  /** Retained opaquely for old saved maps; retired UI never executes this HTML. */
+  wireframes?: unknown[];
+  history?: { past: GraphSnapshot[]; future: GraphSnapshot[] };
+  schemaVersion?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -39,11 +44,13 @@ export interface ChatSession {
 interface ChatState {
   // Current session
   activeSessionId: string | null;
+  sessionEpoch: number;
   messages: ChatMessage[];
   sessions: ChatSession[];
   isLoading: boolean;
   isGenerating: boolean;
   error: string | null;
+  storageError: string | null;
 
   // Message actions
   addUserMessage: (content: string, attachments?: MessageAttachment[]) => void;
@@ -52,7 +59,7 @@ interface ChatState {
   setGenerating: (generating: boolean) => void;
   setError: (error: string | null) => void;
   clearChat: () => void;
-  getConversationForAPI: () => { role: string; content: string; attachments?: MessageAttachment[] }[];
+  getConversationForAPI: () => { role: "user" | "assistant"; content: string; attachments?: {type: "document"; name: string; data: string}[] }[];
 
   // Session actions
   createNewChat: () => void;
@@ -62,12 +69,10 @@ interface ChatState {
   loadSessions: () => void;
 
   // Graph persistence per chat
-  saveGraphToSession: (nodes: MindMapNode[], edges: MindMapEdge[]) => void;
+  saveGraphToSession: (nodes: MindMapNode[], edges: MindMapEdge[], history?: ChatSession["history"]) => void;
   getActiveSessionGraph: () => { nodes: MindMapNode[]; edges: MindMapEdge[] } | null;
 
-  // Wireframe persistence per chat
-  saveWireframesToSession: (wireframes: Wireframe[]) => void;
-  getActiveSessionWireframes: () => Wireframe[];
+
 }
 
 const STORAGE_KEY = "mindmap-chat-sessions";
@@ -79,32 +84,58 @@ function generateSessionId(): string {
 
 function saveSessions(sessions: ChatSession[]) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  try {
+    const previous = localStorage.getItem(STORAGE_KEY);
+    if (previous) {
+      try {decodeSessions(previous);} catch {
+        // Preserve unreadable data before any explicit new-map save replaces it.
+        localStorage.setItem(`${STORAGE_KEY}-recovery`, previous);
+      }
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    useChatStore.setState({storageError: null});
+  } catch {
+    useChatStore.setState({storageError: "Could not save locally. Keep this tab open, free browser storage, then make another edit to retry."});
+  }
 }
 
-function loadSessionsFromStorage(): ChatSession[] {
+function decodeSessions(raw: string): ChatSession[] {
+  const value: unknown = JSON.parse(raw);
+  if (!Array.isArray(value)) throw new Error("Invalid saved maps");
+  const isRecord = (item: unknown): item is Record<string, unknown> => !!item && typeof item === "object";
+  const validGraph = (nodes: unknown, edges: unknown) => Array.isArray(nodes) && nodes.every(n => isRecord(n) && typeof n.id === "string" && isRecord(n.position) && typeof n.position.x === "number" && typeof n.position.y === "number" && isRecord(n.data) && typeof n.data.label === "string")
+    && Array.isArray(edges) && edges.every(e => isRecord(e) && typeof e.id === "string" && typeof e.source === "string" && typeof e.target === "string");
+  for (const session of value) {
+    if (!isRecord(session) || typeof session.id !== "string" || !Array.isArray(session.messages) || !session.messages.every(m => isRecord(m) && (m.role === "user" || m.role === "assistant") && typeof m.content === "string") || !validGraph(session.graphNodes, session.graphEdges)) throw new Error("Invalid saved map");
+    // Bad optional history cannot prevent recovery of an otherwise valid map.
+    const h = session.history;
+    if (h !== undefined && (!isRecord(h) || ![h.past, h.future].every(stack => Array.isArray(stack) && stack.every(snapshot => isRecord(snapshot) && validGraph(snapshot.nodes, snapshot.edges))))) delete session.history;
+  }
+  return value as ChatSession[];
+}
+
+function loadSessionsFromStorage(): ChatSession[] | null {
   if (typeof window === "undefined") return [];
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return [];
   try {
-    return JSON.parse(raw) as ChatSession[];
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? decodeSessions(raw) : [];
   } catch {
-    return [];
+    useChatStore.setState({storageError: "Could not read saved maps. Existing browser data has been retained. Keep this tab open while recovering it."});
+    return null;
   }
 }
 
 function saveActiveId(id: string | null) {
   if (typeof window === "undefined") return;
-  if (id) {
-    localStorage.setItem(ACTIVE_KEY, id);
-  } else {
-    localStorage.removeItem(ACTIVE_KEY);
-  }
+  try {
+    if (id) localStorage.setItem(ACTIVE_KEY, id);
+    else localStorage.removeItem(ACTIVE_KEY);
+  } catch { useChatStore.setState({storageError: "Could not save the active map locally."}); }
 }
 
 function loadActiveId(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(ACTIVE_KEY);
+  try { return localStorage.getItem(ACTIVE_KEY); } catch { return null; }
 }
 
 /** Derive title from first user message, truncated */
@@ -142,15 +173,17 @@ function persistCurrentSession(
 
 export const useChatStore = create<ChatState>((set, get) => ({
   activeSessionId: null,
+  sessionEpoch: 0,
   messages: [],
   sessions: [],
   isLoading: false,
   isGenerating: false,
   error: null,
+  storageError: null,
 
   addUserMessage: (content, attachments?) => {
     const message: ChatMessage = {
-      id: `msg_${Date.now()}_user`,
+      id: `msg_${crypto.randomUUID()}`,
       role: "user",
       content,
       timestamp: Date.now(),
@@ -167,7 +200,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addAssistantMessage: (content, proposalId?) => {
     const message: ChatMessage = {
-      id: `msg_${Date.now()}_assistant`,
+      id: `msg_${crypto.randomUUID()}`,
       role: "assistant",
       content,
       timestamp: Date.now(),
@@ -194,7 +227,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return get().messages.map((m) => ({
       role: m.role,
       content: m.content,
-      ...(m.attachments && m.attachments.length > 0 && { attachments: m.attachments }),
+      ...(m.attachments?.some(a => a.type === "document" && a.textContent) && {
+        attachments: m.attachments.filter(a => a.type === "document" && a.textContent).map(a => ({type: "document" as const, name: a.name, data: a.textContent!})),
+      }),
     }));
   },
 
@@ -206,7 +241,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       graphNodes: [],
       graphEdges: [],
-      wireframes: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -216,6 +250,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     saveActiveId(newId);
     set({
       activeSessionId: newId,
+      sessionEpoch: get().sessionEpoch + 1,
       messages: [],
       sessions,
       error: null,
@@ -231,6 +266,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     saveActiveId(sessionId);
     set({
       activeSessionId: sessionId,
+      sessionEpoch: get().sessionEpoch + 1,
       messages: session.messages,
       error: null,
       isLoading: false,
@@ -250,6 +286,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({
           sessions: updated,
           activeSessionId: latest.id,
+          sessionEpoch: get().sessionEpoch + 1,
+          isLoading: false,
+          isGenerating: false,
           messages: latest.messages,
           error: null,
         });
@@ -272,6 +311,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadSessions: () => {
     const sessions = loadSessionsFromStorage();
+    if (sessions === null) return;
     const savedActiveId = loadActiveId();
 
     if (sessions.length === 0) {
@@ -287,17 +327,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       sessions,
       activeSessionId: activeSession.id,
+      sessionEpoch: get().sessionEpoch + 1,
       messages: activeSession.messages,
     });
   },
 
-  saveGraphToSession: (nodes, edges) => {
+  saveGraphToSession: (nodes, edges, history) => {
     const { sessions, activeSessionId } = get();
     if (!activeSessionId) return;
 
+    const snapshot = cleanSnapshot({nodes, edges});
     const updated = sessions.map((s) =>
       s.id === activeSessionId
-        ? { ...s, graphNodes: nodes, graphEdges: edges, updatedAt: Date.now() }
+        ? { ...s, graphNodes: snapshot.nodes, graphEdges: snapshot.edges, ...(history && {history}), schemaVersion: 2, updatedAt: Date.now() }
         : s
     );
     saveSessions(updated);
@@ -311,23 +353,4 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return { nodes: session.graphNodes || [], edges: session.graphEdges || [] };
   },
 
-  saveWireframesToSession: (wireframes) => {
-    const { sessions, activeSessionId } = get();
-    if (!activeSessionId) return;
-
-    const updated = sessions.map((s) =>
-      s.id === activeSessionId
-        ? { ...s, wireframes, updatedAt: Date.now() }
-        : s
-    );
-    saveSessions(updated);
-    set({ sessions: updated });
-  },
-
-  getActiveSessionWireframes: () => {
-    const { sessions, activeSessionId } = get();
-    const session = sessions.find((s) => s.id === activeSessionId);
-    if (!session) return [];
-    return session.wireframes || [];
-  },
 }));

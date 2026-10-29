@@ -1,13 +1,15 @@
 "use client";
 
+import { documentBounds } from "@/lib/connector-endpoints";
+import MapFilePanel from "./MapFilePanel";
 import { useState, useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import { toPng } from "html-to-image";
+import { toBlob } from "html-to-image";
 import { useMindMapStore } from "@/store/mindmap-store";
 import { useChatStore } from "@/store/chat-store";
 import { graphToFigmaJSON, graphToMermaid } from "@/lib/figma-export";
 
-type ExportTab = "report" | "png" | "figma";
+type ExportTab = "report" | "png" | "figma" | "map";
 
 export default function ExportDesignModal({
   onClose,
@@ -22,10 +24,15 @@ export default function ExportDesignModal({
   const [pngExporting, setPngExporting] = useState(false);
 
   // Figma tab state
-  const [figmaCopied, setFigmaCopied] = useState<"json" | "mermaid" | null>(null);
+  const [figmaCopied, setFigmaCopied] = useState<"json" | "mermaid" | null>(
+    null,
+  );
   const [showMermaidPreview, setShowMermaidPreview] = useState(false);
 
   const { nodes, edges } = useMindMapStore();
+  const hasFreeConnectors = edges.some(
+    (edge) => edge.source === "" || edge.target === "",
+  );
   const { getConversationForAPI } = useChatStore();
 
   const handleGenerate = useCallback(async () => {
@@ -78,33 +85,27 @@ export default function ExportDesignModal({
   const handleDownloadPng = useCallback(async () => {
     setPngExporting(true);
     setError(null);
+    let originalTransform: string | undefined;
+    let exportViewport: HTMLElement | null = null;
 
     try {
       const viewport = document.querySelector(
-        ".react-flow__viewport"
+        ".react-flow__viewport",
       ) as HTMLElement | null;
       if (!viewport) {
         throw new Error("Could not find the diagram on the canvas.");
       }
 
       // Save the current viewport transform so we can restore it after
-      const originalTransform = viewport.style.transform;
+      originalTransform = viewport.style.transform;
+      exportViewport = viewport;
 
-      // Use node positions from the store to compute full graph bounds
-      const NODE_WIDTH = 160;
-      const NODE_HEIGHT = 60;
       const padding = 60;
-
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const n of nodes) {
-        minX = Math.min(minX, n.position.x);
-        minY = Math.min(minY, n.position.y);
-        maxX = Math.max(maxX, n.position.x + NODE_WIDTH);
-        maxY = Math.max(maxY, n.position.y + NODE_HEIGHT);
-      }
-
-      const graphWidth = maxX - minX + padding * 2;
-      const graphHeight = maxY - minY + padding * 2;
+      const bounds = documentBounds(nodes, edges);
+      const minX = bounds.x,
+        minY = bounds.y;
+      const graphWidth = bounds.width + padding * 2,
+        graphHeight = bounds.height + padding * 2;
 
       // Use scale 1 so nodes render at their natural size
       const scale = 1;
@@ -115,7 +116,7 @@ export default function ExportDesignModal({
       // Wait for the browser to paint the new transform
       await new Promise((r) => setTimeout(r, 150));
 
-      const dataUrl = await toPng(viewport, {
+      const blob = await toBlob(viewport, {
         backgroundColor: "#f9fafb",
         pixelRatio: 2,
         width: Math.ceil(graphWidth),
@@ -127,7 +128,13 @@ export default function ExportDesignModal({
             !classes.includes("react-flow__minimap") &&
             !classes.includes("react-flow__controls") &&
             !classes.includes("react-flow__attribution") &&
-            !classes.includes("react-flow__panel")
+            !classes.includes("react-flow__panel") &&
+            !classes.includes("react-flow__handle") &&
+            !(
+              node instanceof Element &&
+              (node.hasAttribute("data-endpoint-control") ||
+                node.getAttribute("aria-label") === "Adjust connector segment")
+            )
           );
         },
       });
@@ -136,20 +143,20 @@ export default function ExportDesignModal({
       viewport.style.transform = originalTransform;
 
       const a = document.createElement("a");
-      a.href = dataUrl;
+      if (!blob) throw new Error("Could not render the diagram image.");
+      const url = URL.createObjectURL(blob);
+      a.href = url;
       a.download = "arbor-ai-diagram.png";
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
-      // Attempt to restore viewport on error
-      const vp = document.querySelector(".react-flow__viewport") as HTMLElement | null;
-      if (vp) vp.style.transform = "";
-      setError(
-        err instanceof Error ? err.message : "Failed to export PNG"
-      );
+      setError(err instanceof Error ? err.message : "Failed to export PNG");
     } finally {
+      if (exportViewport && originalTransform !== undefined)
+        exportViewport.style.transform = originalTransform;
       setPngExporting(false);
     }
-  }, [nodes]);
+  }, [nodes, edges]);
 
   // ── Figma export handlers ──────────────────────────────────────────────────
 
@@ -169,7 +176,9 @@ export default function ExportDesignModal({
 
   const handleDownloadJSON = useCallback(() => {
     const payload = graphToFigmaJSON(nodes, edges);
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -183,14 +192,21 @@ export default function ExportDesignModal({
       <div className="bg-white rounded-xl shadow-2xl w-[680px] h-[70vh] flex flex-col mx-4">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b shrink-0">
-          <h2 className="text-sm font-semibold text-gray-800">
-            Export
-          </h2>
+          <h2 className="text-sm font-semibold text-gray-800">Export</h2>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 p-1"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -199,6 +215,12 @@ export default function ExportDesignModal({
 
         {/* Tabs */}
         <div className="flex border-b shrink-0">
+          <button
+            onClick={() => setActiveTab("map")}
+            className={`px-4 py-2 text-sm border-b-2 ${activeTab === "map" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}
+          >
+            Editable map
+          </button>
           <button
             onClick={() => setActiveTab("report")}
             className={`flex-1 py-2 text-xs font-medium transition-colors ${
@@ -233,6 +255,7 @@ export default function ExportDesignModal({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 min-h-0">
+          {activeTab === "map" && <MapFilePanel />}
           {activeTab === "report" && (
             <>
               {!markdown && !isLoading && !error && (
@@ -291,29 +314,45 @@ export default function ExportDesignModal({
                   <ReactMarkdown
                     components={{
                       h1: ({ children }) => (
-                        <h1 className="text-lg font-bold mt-4 mb-2 text-gray-900 first:mt-0">{children}</h1>
+                        <h1 className="text-lg font-bold mt-4 mb-2 text-gray-900 first:mt-0">
+                          {children}
+                        </h1>
                       ),
                       h2: ({ children }) => (
-                        <h2 className="text-base font-semibold mt-4 mb-1.5 text-gray-800">{children}</h2>
+                        <h2 className="text-base font-semibold mt-4 mb-1.5 text-gray-800">
+                          {children}
+                        </h2>
                       ),
                       h3: ({ children }) => (
-                        <h3 className="text-sm font-semibold mt-3 mb-1 text-gray-700">{children}</h3>
+                        <h3 className="text-sm font-semibold mt-3 mb-1 text-gray-700">
+                          {children}
+                        </h3>
                       ),
                       p: ({ children }) => (
-                        <p className="mb-2 text-sm leading-relaxed">{children}</p>
+                        <p className="mb-2 text-sm leading-relaxed">
+                          {children}
+                        </p>
                       ),
                       ul: ({ children }) => (
-                        <ul className="list-disc pl-5 mb-2 space-y-0.5 text-sm">{children}</ul>
+                        <ul className="list-disc pl-5 mb-2 space-y-0.5 text-sm">
+                          {children}
+                        </ul>
                       ),
                       ol: ({ children }) => (
-                        <ol className="list-decimal pl-5 mb-2 space-y-0.5 text-sm">{children}</ol>
+                        <ol className="list-decimal pl-5 mb-2 space-y-0.5 text-sm">
+                          {children}
+                        </ol>
                       ),
-                      li: ({ children }) => <li className="text-sm">{children}</li>,
+                      li: ({ children }) => (
+                        <li className="text-sm">{children}</li>
+                      ),
                       strong: ({ children }) => (
                         <strong className="font-semibold">{children}</strong>
                       ),
                       code: ({ children }) => (
-                        <code className="bg-gray-100 px-1 py-0.5 rounded text-xs">{children}</code>
+                        <code className="bg-gray-100 px-1 py-0.5 rounded text-xs">
+                          {children}
+                        </code>
                       ),
                       hr: () => <hr className="my-3 border-gray-200" />,
                     }}
@@ -327,22 +366,25 @@ export default function ExportDesignModal({
 
           {activeTab === "png" && (
             <div className="text-center py-8">
-              {nodes.length === 0 ? (
+              {nodes.length === 0 && edges.length === 0 ? (
                 <>
                   <p className="text-sm text-gray-500 mb-3">
                     No diagram on the canvas yet.
                   </p>
                   <p className="text-xs text-gray-400">
-                    Generate a mind map first, then come back to export it as PNG.
+                    Generate a mind map first, then come back to export it as
+                    PNG.
                   </p>
                 </>
               ) : (
                 <>
                   <p className="text-sm text-gray-500 mb-3">
-                    Download your mind map diagram as a high-resolution PNG image.
+                    Download your mind map diagram as a high-resolution PNG
+                    image.
                   </p>
                   <p className="text-xs text-gray-400 mb-4">
-                    The export captures all {nodes.length} nodes and {edges.length} connections at 2x resolution.
+                    The export captures all {nodes.length} nodes and{" "}
+                    {edges.length} connections at 2x resolution.
                   </p>
                   {error && activeTab === "png" && (
                     <p className="text-sm text-red-500 mb-3">{error}</p>
@@ -379,7 +421,7 @@ export default function ExportDesignModal({
 
           {activeTab === "figma" && (
             <div className="py-2">
-              {nodes.length === 0 ? (
+              {nodes.length === 0 && edges.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-sm text-gray-500 mb-3">
                     No diagram on the canvas yet.
@@ -393,12 +435,32 @@ export default function ExportDesignModal({
                   {/* Summary */}
                   <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
                     <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center shrink-0">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <path d="M5 5.5A3.5 3.5 0 0 1 8.5 2H12v7H8.5A3.5 3.5 0 0 1 5 5.5z" fill="#F24E1E"/>
-                        <path d="M12 2h3.5a3.5 3.5 0 1 1 0 7H12V2z" fill="#FF7262"/>
-                        <path d="M12 12.5a3.5 3.5 0 1 1 7 0 3.5 3.5 0 1 1-7 0z" fill="#1ABCFE"/>
-                        <path d="M5 19.5A3.5 3.5 0 0 1 8.5 16H12v3.5a3.5 3.5 0 1 1-7 0z" fill="#0ACF83"/>
-                        <path d="M5 12.5A3.5 3.5 0 0 1 8.5 9H12v7H8.5A3.5 3.5 0 0 1 5 12.5z" fill="#A259FF"/>
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                      >
+                        <path
+                          d="M5 5.5A3.5 3.5 0 0 1 8.5 2H12v7H8.5A3.5 3.5 0 0 1 5 5.5z"
+                          fill="#F24E1E"
+                        />
+                        <path
+                          d="M12 2h3.5a3.5 3.5 0 1 1 0 7H12V2z"
+                          fill="#FF7262"
+                        />
+                        <path
+                          d="M12 12.5a3.5 3.5 0 1 1 7 0 3.5 3.5 0 1 1-7 0z"
+                          fill="#1ABCFE"
+                        />
+                        <path
+                          d="M5 19.5A3.5 3.5 0 0 1 8.5 16H12v3.5a3.5 3.5 0 1 1-7 0z"
+                          fill="#0ACF83"
+                        />
+                        <path
+                          d="M5 12.5A3.5 3.5 0 0 1 8.5 9H12v7H8.5A3.5 3.5 0 0 1 5 12.5z"
+                          fill="#A259FF"
+                        />
                       </svg>
                     </div>
                     <div>
@@ -414,12 +476,17 @@ export default function ExportDesignModal({
                   {/* Option 1: Figma Plugin */}
                   <div className="border rounded-lg p-4">
                     <div className="flex items-start gap-3 mb-3">
-                      <span className="w-5 h-5 rounded-full bg-purple-100 text-purple-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">1</span>
+                      <span className="w-5 h-5 rounded-full bg-purple-100 text-purple-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        1
+                      </span>
                       <div>
-                        <h3 className="text-sm font-semibold text-gray-800">Figma Plugin Import</h3>
+                        <h3 className="text-sm font-semibold text-gray-800">
+                          Figma Plugin Import
+                        </h3>
                         <p className="text-xs text-gray-500 mt-0.5">
-                          Creates proper Figma frames with auto-layout and connector arrows.
-                          Best for editable, structured designs.
+                          Creates proper Figma frames with auto-layout and
+                          connector arrows. Best for editable, structured
+                          designs.
                         </p>
                       </div>
                     </div>
@@ -431,15 +498,40 @@ export default function ExportDesignModal({
                         >
                           {figmaCopied === "json" ? (
                             <>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
                                 <polyline points="20 6 9 17 4 12" />
                               </svg>
                               Copied!
                             </>
                           ) : (
                             <>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                              <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <rect
+                                  x="9"
+                                  y="9"
+                                  width="13"
+                                  height="13"
+                                  rx="2"
+                                  ry="2"
+                                />
                                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                               </svg>
                               Copy for Figma Plugin
@@ -454,39 +546,81 @@ export default function ExportDesignModal({
                         </button>
                       </div>
                       <p className="text-[10px] text-gray-400 leading-relaxed">
-                        Open the Arbor AI Import plugin in Figma, paste the copied JSON, and click Import.
-                        The plugin creates frames, text labels, and connector arrows preserving your graph structure.
+                        Open the Arbor AI Import plugin in Figma, paste the
+                        copied JSON, and click Import. The plugin creates
+                        frames, text labels, and connector arrows preserving
+                        your graph structure.
                       </p>
                     </div>
                   </div>
 
+                  {hasFreeConnectors && (
+                    <p
+                      role="status"
+                      className="text-sm text-amber-800 bg-amber-50 p-3 rounded"
+                    >
+                      Mermaid requires node-attached connections. Use editable
+                      map, PNG or Figma JSON to preserve free endpoints.
+                    </p>
+                  )}
                   {/* Option 2: FigJam / Mermaid */}
                   <div className="border rounded-lg p-4">
                     <div className="flex items-start gap-3 mb-3">
-                      <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">2</span>
+                      <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        2
+                      </span>
                       <div>
-                        <h3 className="text-sm font-semibold text-gray-800">Mermaid Diagram</h3>
+                        <h3 className="text-sm font-semibold text-gray-800">
+                          Mermaid Diagram
+                        </h3>
                         <p className="text-xs text-gray-500 mt-0.5">
-                          Copy as Mermaid.js syntax for FigJam, GitHub, Notion, or any Mermaid-compatible tool.
+                          Copy as Mermaid.js syntax for FigJam, GitHub, Notion,
+                          or any Mermaid-compatible tool.
                         </p>
                       </div>
                     </div>
                     <div className="ml-8 space-y-2">
                       <button
+                        disabled={hasFreeConnectors}
                         onClick={handleCopyMermaid}
                         className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors inline-flex items-center gap-1.5"
                       >
                         {figmaCopied === "mermaid" ? (
                           <>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
                               <polyline points="20 6 9 17 4 12" />
                             </svg>
                             Copied!
                           </>
                         ) : (
                           <>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                            <svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <rect
+                                x="9"
+                                y="9"
+                                width="13"
+                                height="13"
+                                rx="2"
+                                ry="2"
+                              />
                               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                             </svg>
                             Copy Mermaid Syntax
@@ -497,6 +631,7 @@ export default function ExportDesignModal({
                       {/* Preview */}
                       <div className="mt-2">
                         <button
+                          disabled={hasFreeConnectors}
                           onClick={() => setShowMermaidPreview((p) => !p)}
                           className="text-[10px] text-blue-500 hover:text-blue-600 font-medium inline-flex items-center gap-1"
                         >
@@ -515,7 +650,7 @@ export default function ExportDesignModal({
                           </svg>
                           {showMermaidPreview ? "Hide preview" : "Show preview"}
                         </button>
-                        {showMermaidPreview && (
+                        {showMermaidPreview && !hasFreeConnectors && (
                           <MermaidPreview code={graphToMermaid(nodes, edges)} />
                         )}
                       </div>
@@ -529,13 +664,35 @@ export default function ExportDesignModal({
                     </summary>
                     <ol className="mt-2 space-y-1.5 pl-4 list-decimal text-[11px] leading-relaxed">
                       <li>
-                        Download the <code className="bg-gray-100 px-1 rounded">figma-plugin</code> folder
-                        from the Arbor AI project
+                        Download the{" "}
+                        <code className="bg-gray-100 px-1 rounded">
+                          figma-plugin
+                        </code>{" "}
+                        folder from the Arbor AI project
                       </li>
-                      <li>In Figma, go to <strong>Plugins &rarr; Development &rarr; Import plugin from manifest...</strong></li>
-                      <li>Select the <code className="bg-gray-100 px-1 rounded">manifest.json</code> file from the downloaded folder</li>
-                      <li>Run the plugin: <strong>Plugins &rarr; Development &rarr; Arbor AI Import</strong></li>
-                      <li>Copy the JSON from here and paste it into the plugin</li>
+                      <li>
+                        In Figma, go to{" "}
+                        <strong>
+                          Plugins &rarr; Development &rarr; Import plugin from
+                          manifest...
+                        </strong>
+                      </li>
+                      <li>
+                        Select the{" "}
+                        <code className="bg-gray-100 px-1 rounded">
+                          manifest.json
+                        </code>{" "}
+                        file from the downloaded folder
+                      </li>
+                      <li>
+                        Run the plugin:{" "}
+                        <strong>
+                          Plugins &rarr; Development &rarr; Arbor AI Import
+                        </strong>
+                      </li>
+                      <li>
+                        Copy the JSON from here and paste it into the plugin
+                      </li>
                     </ol>
                   </details>
                 </div>

@@ -8,7 +8,6 @@ interface NodeContextMenuProps {
   nodeId: string;
   nodeLabel: string;
   onCopy: () => void;
-  onGenerateWireframe: () => void;
   onClose: () => void;
 }
 
@@ -16,7 +15,6 @@ export default function NodeContextMenu({
   x,
   y,
   onCopy,
-  onGenerateWireframe,
   onClose,
 }: NodeContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -68,7 +66,6 @@ export default function NodeContextMenu({
           <span className="ml-auto text-[10px] text-gray-400">⌘C</span>
         </button>
 
-        {/* Generate Wireframe — hidden while automotive vertical is in development */}
       </div>
     </div>
   );

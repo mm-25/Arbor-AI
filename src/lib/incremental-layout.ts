@@ -14,16 +14,7 @@
  * use `getLayoutedElements` instead.
  */
 import type { MindMapNode, NodeType } from "@/store/mindmap-store";
-
-// Mirror of NODE_SIZES in auto-layout.ts. Kept local to avoid cross-module
-// churn — these rarely change.
-const NODE_SIZES: Record<string, { w: number; h: number }> = {
-  circle: { w: 110, h: 110 },
-  rectangle: { w: 140, h: 70 },
-  diamond: { w: 130, h: 130 },
-  "rounded-rect": { w: 140, h: 70 },
-};
-const DEFAULT_SIZE = { w: 140, h: 80 };
+import { nodeSize } from "./canvas-geometry";
 
 const HORIZONTAL_GAP = 80; // px between anchor and placed node along flow axis
 const VERTICAL_GAP = 50; // px between siblings placed around same anchor
@@ -56,8 +47,9 @@ export interface PlacedNewNode {
   position: { x: number; y: number };
 }
 
-function getDims(type: string): { w: number; h: number } {
-  return NODE_SIZES[type] || DEFAULT_SIZE;
+function getDims(type: string, label = ""): { w: number; h: number } {
+  const size = nodeSize({ data: { type, label } });
+  return { w: size.width, h: size.height };
 }
 
 /**
@@ -69,7 +61,7 @@ function hasOverlap(
   w: number,
   h: number,
   placed: Map<string, PlacedBox>,
-  ignoreId?: string
+  ignoreId?: string,
 ): boolean {
   for (const [id, p] of placed) {
     if (id === ignoreId) continue;
@@ -94,7 +86,7 @@ function findAnchor(
   nodeId: string,
   incoming: Map<string, string[]>,
   outgoing: Map<string, string[]>,
-  placed: Map<string, PlacedBox>
+  placed: Map<string, PlacedBox>,
 ): string | null {
   const parents = incoming.get(nodeId) || [];
   for (const p of parents) if (placed.has(p)) return p;
@@ -114,7 +106,7 @@ function resolveOverlap(
   w: number,
   h: number,
   placed: Map<string, PlacedBox>,
-  direction: "LR" | "TB"
+  direction: "LR" | "TB",
 ): { x: number; y: number } {
   let x = baseX;
   let y = baseY;
@@ -134,6 +126,18 @@ function resolveOverlap(
     iterations++;
   }
 
+  // A finite local search must never silently return a colliding placement.
+  // Use free space outside the occupied bounds without shifting any anchors.
+  if (hasOverlap(x, y, w, h, placed)) {
+    const bounds = getBoundingBox(placed);
+    if (direction === "LR") {
+      x = bounds.maxX + HORIZONTAL_GAP;
+      y = baseY;
+    } else {
+      x = baseX;
+      y = bounds.maxY + VERTICAL_GAP;
+    }
+  }
   return { x, y };
 }
 
@@ -185,17 +189,17 @@ export function placeNewNodesIncrementally(
   existingNodes: MindMapNode[],
   newNodeSpecs: NewNodeSpec[],
   newEdges: NewEdgeSpec[],
-  direction: "LR" | "TB" = "LR"
+  direction: "LR" | "TB" = "LR",
 ): PlacedNewNode[] {
   // Start with existing nodes recorded as "placed" (immovable anchors)
   const placed = new Map<string, PlacedBox>();
   for (const n of existingNodes) {
-    const dims = getDims(n.data.type);
+    const dims = getDims(n.data.type, n.data.label);
     placed.set(n.id, {
       x: n.position.x,
       y: n.position.y,
-      w: dims.w,
-      h: dims.h,
+      w: n.measured?.width ?? dims.w,
+      h: n.measured?.height ?? dims.h,
     });
   }
 
@@ -226,7 +230,8 @@ export function placeNewNodesIncrementally(
     for (const node of remaining) {
       const anchorId = findAnchor(node.id, incoming, outgoing, placed);
       if (anchorId) {
-        if (!placeableByAnchor.has(anchorId)) placeableByAnchor.set(anchorId, []);
+        if (!placeableByAnchor.has(anchorId))
+          placeableByAnchor.set(anchorId, []);
         placeableByAnchor.get(anchorId)!.push(node);
       } else {
         unplaceable.push(node);
@@ -240,7 +245,7 @@ export function placeNewNodesIncrementally(
 
       // Compute center of the sibling group so they fan out symmetrically
       // around the anchor's perpendicular axis
-      const siblingDims = siblings.map((s) => getDims(s.type));
+      const siblingDims = siblings.map((s) => getDims(s.type, s.label));
 
       if (direction === "LR") {
         // Total stack height of siblings
@@ -252,7 +257,10 @@ export function placeNewNodesIncrementally(
 
         siblings.forEach((node, idx) => {
           const d = siblingDims[idx];
-          const baseX = anchor.x + anchor.w + HORIZONTAL_GAP;
+          const upstream = outgoing.get(node.id)?.includes(anchorId);
+          const baseX = upstream
+            ? anchor.x - d.w - HORIZONTAL_GAP
+            : anchor.x + anchor.w + HORIZONTAL_GAP;
           const baseY = cursorY;
           cursorY += d.h + VERTICAL_GAP;
 
@@ -262,7 +270,7 @@ export function placeNewNodesIncrementally(
             d.w,
             d.h,
             placed,
-            direction
+            direction,
           );
           placed.set(node.id, { x: fx, y: fy, w: d.w, h: d.h });
           result.push({
@@ -283,7 +291,10 @@ export function placeNewNodesIncrementally(
         siblings.forEach((node, idx) => {
           const d = siblingDims[idx];
           const baseX = cursorX;
-          const baseY = anchor.y + anchor.h + VERTICAL_GAP;
+          const upstream = outgoing.get(node.id)?.includes(anchorId);
+          const baseY = upstream
+            ? anchor.y - d.h - VERTICAL_GAP
+            : anchor.y + anchor.h + VERTICAL_GAP;
           cursorX += d.w + HORIZONTAL_GAP;
 
           const { x: fx, y: fy } = resolveOverlap(
@@ -292,7 +303,7 @@ export function placeNewNodesIncrementally(
             d.w,
             d.h,
             placed,
-            direction
+            direction,
           );
           placed.set(node.id, { x: fx, y: fy, w: d.w, h: d.h });
           result.push({
@@ -313,7 +324,7 @@ export function placeNewNodesIncrementally(
   if (remaining.length > 0) {
     const bbox = getBoundingBox(placed);
     for (const node of remaining) {
-      const d = getDims(node.type);
+      const d = getDims(node.type, node.label);
       let baseX: number;
       let baseY: number;
       if (direction === "LR") {
@@ -329,7 +340,7 @@ export function placeNewNodesIncrementally(
         d.w,
         d.h,
         placed,
-        direction
+        direction,
       );
       placed.set(node.id, { x: fx, y: fy, w: d.w, h: d.h });
       result.push({

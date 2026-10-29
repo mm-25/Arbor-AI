@@ -6,7 +6,8 @@
  * 2. Mermaid.js – for pasting into FigJam diagrams
  */
 
-import type { MindMapNode, MindMapEdge, NodeType } from "@/store/mindmap-store";
+import type { MindMapNode, MindMapEdge } from "@/store/mindmap-store";
+import type { Point } from "./canvas-geometry";
 import { getNodeVisualConfig } from "@/components/nodes/node-config";
 
 // ── JSON export (for Figma plugin) ─────────────────────────────────────────
@@ -31,6 +32,8 @@ interface FigmaExportNode {
 }
 
 interface FigmaExportEdge {
+  sourcePoint?: Point;
+  targetPoint?: Point;
   source: string;
   target: string;
   label?: string;
@@ -38,7 +41,7 @@ interface FigmaExportEdge {
 
 export function graphToFigmaJSON(
   nodes: MindMapNode[],
-  edges: MindMapEdge[]
+  edges: MindMapEdge[],
 ): FigmaExportPayload {
   return {
     appName: "Arbor AI",
@@ -60,6 +63,12 @@ export function graphToFigmaJSON(
     edges: edges.map((e) => ({
       source: e.source,
       target: e.target,
+      ...(e.data?.sourcePoint
+        ? { sourcePoint: { ...(e.data.sourcePoint as Point) } }
+        : {}),
+      ...(e.data?.targetPoint
+        ? { targetPoint: { ...(e.data.targetPoint as Point) } }
+        : {}),
       ...(e.label ? { label: String(e.label) } : {}),
     })),
   };
@@ -101,8 +110,12 @@ function mermaidShape(id: string, label: string, type: string): string {
 
 export function graphToMermaid(
   nodes: MindMapNode[],
-  edges: MindMapEdge[]
+  edges: MindMapEdge[],
 ): string {
+  if (edges.some((edge) => edge.source === "" || edge.target === ""))
+    throw new Error(
+      "Mermaid requires node-attached connectors. Use PNG, editable map or Figma JSON for free endpoints.",
+    );
   const lines: string[] = ["graph LR"];
 
   // Node definitions
@@ -113,7 +126,9 @@ export function graphToMermaid(
   // Edge definitions
   for (const e of edges) {
     if (e.label) {
-      lines.push(`  ${e.source} -->|${mermaidLabel(String(e.label))}| ${e.target}`);
+      lines.push(
+        `  ${e.source} -->|${mermaidLabel(String(e.label))}| ${e.target}`,
+      );
     } else {
       lines.push(`  ${e.source} --> ${e.target}`);
     }
@@ -122,7 +137,9 @@ export function graphToMermaid(
   // Style classes — group by visual appearance
   for (const n of nodes) {
     const vis = getNodeVisualConfig(n.data.type, n.data.color, n.data.icon);
-    lines.push(`  style ${n.id} fill:${vis.bgColor},stroke:${vis.color},color:${vis.color}`);
+    lines.push(
+      `  style ${n.id} fill:${vis.bgColor},stroke:${vis.color},color:${vis.color}`,
+    );
   }
 
   return lines.join("\n");

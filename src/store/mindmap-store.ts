@@ -1,19 +1,30 @@
+import { useChatStore } from "./chat-store";
 import { create } from "zustand";
 import {
   type Node,
   type Edge,
   type OnNodesChange,
   type OnEdgesChange,
-  type OnConnect,
   applyNodeChanges,
   applyEdgeChanges,
   addEdge,
-  type Connection,
   type NodeChange,
 } from "@xyflow/react";
 import type { Proposal } from "./proposal-store";
 import { useHistoryStore } from "./history-store";
+import { getLayoutedElements } from "@/lib/auto-layout";
+import { translateEdgeGeometry, connectionHandles } from "@/lib/edge-routing";
+import { layoutDocument, type LayoutCommand } from "@/lib/layout-command";
+import { useEditorStore } from "./editor-store";
 import { placeNewNodesIncrementally } from "@/lib/incremental-layout";
+import {
+  validConnection,
+  edgeConnection,
+  sameConnection,
+  applyConnection,
+  edgeEndpointsExist,
+  type ConnectorConnection,
+} from "@/lib/connector-endpoints";
 
 export type NodeType = "rectangle" | "rounded-rect" | "circle" | "diamond";
 
@@ -34,12 +45,30 @@ interface MindMapState {
   edges: MindMapEdge[];
   onNodesChange: OnNodesChange<MindMapNode>;
   onEdgesChange: OnEdgesChange;
-  onConnect: OnConnect;
+  onConnect: (connection: ConnectorConnection) => void;
+  tidyGraph: (command: LayoutCommand, selectedIds?: string[]) => void;
+  reconnectEdge: (
+    id: string,
+    connection: ConnectorConnection,
+    epoch: number,
+  ) => boolean;
   addNode: (node: MindMapNode) => void;
   addNodesAndEdges: (nodes: MindMapNode[], edges: MindMapEdge[]) => void;
-  setNodesAndEdges: (nodes: MindMapNode[], edges: MindMapEdge[], skipHistory?: boolean) => void;
+  setNodesAndEdges: (
+    nodes: MindMapNode[],
+    edges: MindMapEdge[],
+    skipHistory?: boolean,
+  ) => void;
   updateNodeLabel: (nodeId: string, label: string) => void;
-  updateNodeStyle: (nodeId: string, style: { icon?: string; color?: string; type?: NodeType }) => void;
+  updateNodeStyle: (
+    nodeId: string,
+    style: { icon?: string; color?: string; type?: NodeType },
+  ) => void;
+  beginGraphEdit: () => void;
+  updateEdges: (
+    update: (edges: MindMapEdge[]) => MindMapEdge[],
+    recordHistory?: boolean,
+  ) => void;
   updateEdgeLabel: (edgeId: string, label: string) => void;
   deleteSelected: () => void;
   clear: () => void;
@@ -78,7 +107,10 @@ function pushUndo() {
   // Strip proposalHighlight from edge data
   const cleanEdges = edges.map((e) => {
     if ((e.data as Record<string, unknown>)?.proposalHighlight) {
-      const { proposalHighlight: _, ...rest } = e.data as Record<string, unknown>;
+      const { proposalHighlight: _, ...rest } = e.data as Record<
+        string,
+        unknown
+      >;
       return { ...e, data: rest };
     }
     return e;
@@ -97,14 +129,14 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
     // Detect drag start / end for debouncing position history
     const hasPositionDrag = changes.some(
       (c: NodeChange<MindMapNode>) =>
-        c.type === "position" && "dragging" in c && c.dragging === true
+        c.type === "position" && "dragging" in c && c.dragging === true,
     );
     const hasDragEnd = changes.some(
       (c: NodeChange<MindMapNode>) =>
-        c.type === "position" && "dragging" in c && c.dragging === false
+        c.type === "position" && "dragging" in c && c.dragging === false,
     );
     const hasRemove = changes.some(
-      (c: NodeChange<MindMapNode>) => c.type === "remove"
+      (c: NodeChange<MindMapNode>) => c.type === "remove",
     );
 
     // Push undo on drag START only (not during continuous drag)
@@ -121,29 +153,100 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
       pushUndo();
     }
 
-    set({ nodes: applyNodeChanges(changes, get().nodes) });
+    const nodes = applyNodeChanges(changes, get().nodes);
+    const ids = new Set(nodes.map((n) => n.id));
+    const deltas = new Map(
+      changes.flatMap((change) => {
+        if (change.type !== "position" || !change.position) return [];
+        const previous = get().nodes.find((n) => n.id === change.id);
+        if (!previous) return [];
+        return [
+          [
+            change.id,
+            {
+              x: change.position.x - previous.position.x,
+              y: change.position.y - previous.position.y,
+            },
+          ] as const,
+        ];
+      }),
+    );
+    const edges = get()
+      .edges.filter((e) => edgeEndpointsExist(e, ids))
+      .map((edge) => {
+        const a = deltas.get(edge.source),
+          b = deltas.get(edge.target);
+        return a && b && a.x === b.x && a.y === b.y && (a.x || a.y)
+          ? translateEdgeGeometry(edge, a.x, a.y)
+          : edge;
+      });
+    set({ nodes, edges });
   },
 
   onEdgesChange: (changes) => {
     const hasRemove = changes.some((c) => c.type === "remove");
-    if (hasRemove) {
+    if (
+      hasRemove &&
+      changes.some(
+        (c) => c.type === "remove" && get().edges.some((e) => e.id === c.id),
+      )
+    )
       pushUndo();
-    }
     set({ edges: applyEdgeChanges(changes, get().edges) });
   },
 
-  onConnect: (connection: Connection) => {
+  onConnect: (connection: ConnectorConnection) => {
+    if (!validConnection(connection, get().nodes)) return;
+    const edge = applyConnection(
+      {
+        id: crypto.randomUUID(),
+        source: connection.source,
+        target: connection.target,
+        type: "editable",
+        label: "",
+      },
+      connection,
+    );
+    const edges =
+      connection.sourcePoint || connection.targetPoint
+        ? [...get().edges, edge]
+        : addEdge(edge, get().edges);
+    if (edges.length === get().edges.length) return;
+    pushUndo();
+    set({ edges });
+  },
+
+  tidyGraph: (command, selectedIds) => {
+    const current = get();
+    const result = layoutDocument(
+      current.nodes,
+      current.edges,
+      command,
+      selectedIds ?? current.nodes.filter((n) => n.selected).map((n) => n.id),
+    );
+    if (!current.nodes.length) return;
+    pushUndo();
+    set(result);
+    useEditorStore.getState().requestFit();
+  },
+
+  reconnectEdge: (id, connection, epoch) => {
+    const current = get(),
+      old = current.edges.find((edge) => edge.id === id);
+    if (
+      epoch !== useChatStore.getState().sessionEpoch ||
+      !old ||
+      !validConnection(connection, current.nodes) ||
+      sameConnection(edgeConnection(old), connection)
+    )
+      return false;
     pushUndo();
     set({
-      edges: addEdge(
-        {
-          ...connection,
-          type: "editable",
-          label: "",
-        },
-        get().edges
+      edges: current.edges.map((edge) =>
+        edge.id === id ? applyConnection(edge, connection) : edge,
       ),
     });
+    return true;
   },
 
   addNode: (node) => {
@@ -168,7 +271,7 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
     pushUndo();
     set({
       nodes: get().nodes.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, label } } : n
+        n.id === nodeId ? { ...n, data: { ...n.data, label } } : n,
       ),
     });
   },
@@ -187,25 +290,35 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
                 ...(style.type !== undefined && { type: style.type }),
               },
             }
-          : n
+          : n,
       ),
     });
+  },
+
+  beginGraphEdit: () => pushUndo(),
+  updateEdges: (update, recordHistory = true) => {
+    const edges = update(get().edges);
+    if (edges === get().edges) return;
+    if (recordHistory) pushUndo();
+    set({ edges });
   },
 
   updateEdgeLabel: (edgeId, label) => {
     pushUndo();
     set({
-      edges: get().edges.map((e) =>
-        e.id === edgeId ? { ...e, label } : e
-      ),
+      edges: get().edges.map((e) => (e.id === edgeId ? { ...e, label } : e)),
     });
   },
 
   deleteSelected: () => {
     pushUndo();
+    const nodes = get().nodes.filter((n) => !n.selected);
+    const ids = new Set(nodes.map((n) => n.id));
     set({
-      nodes: get().nodes.filter((n) => !n.selected),
-      edges: get().edges.filter((e) => !e.selected),
+      nodes,
+      edges: get().edges.filter(
+        (e) => !e.selected && edgeEndpointsExist(e, ids),
+      ),
     });
   },
 
@@ -230,7 +343,7 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
   saveToStorage: () => {
     if (typeof window === "undefined") return;
     const { nodes, edges } = get();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, edges }));
+    useChatStore.getState().saveGraphToSession(nodes, edges);
   },
 
   setNodeHighlights: (highlights) => {
@@ -259,7 +372,10 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
           return { ...e, data: { ...e.data, proposalHighlight: highlight } };
         }
         if ((e.data as Record<string, unknown>)?.proposalHighlight) {
-          const { proposalHighlight: _, ...rest } = e.data as Record<string, unknown>;
+          const { proposalHighlight: _, ...rest } = e.data as Record<
+            string,
+            unknown
+          >;
           return { ...e, data: rest };
         }
         return e;
@@ -278,7 +394,10 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
       }),
       edges: get().edges.map((e) => {
         if ((e.data as Record<string, unknown>)?.proposalHighlight) {
-          const { proposalHighlight: _, ...rest } = e.data as Record<string, unknown>;
+          const { proposalHighlight: _, ...rest } = e.data as Record<
+            string,
+            unknown
+          >;
           return { ...e, data: rest };
         }
         return e;
@@ -321,7 +440,7 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
         type: n.type as NodeType,
       })),
       proposal.add_edges.map((e) => ({ source: e.source, target: e.target })),
-      "LR"
+      "LR",
     );
     const newNodes: MindMapNode[] = placedNewNodes.map((n) => ({
       id: n.id,
@@ -331,27 +450,47 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
         label: n.label,
         type: n.type,
         source: "text" as const,
+        ...(proposal.add_nodes.find((node) => node.id === n.id)?.role
+          ? { role: proposal.add_nodes.find((node) => node.id === n.id)!.role }
+          : {}),
       },
     }));
     updatedNodes = [...updatedNodes, ...newNodes];
 
     // 4. Remove edges (by source+target match, and edges connected to removed nodes)
-    const removeEdgeKeys = new Set(
-      proposal.remove_edges.map((e) => `${e.source}->${e.target}`)
-    );
-    let updatedEdges = edges.filter((e) => {
-      if (removeNodeIds.has(e.source) || removeNodeIds.has(e.target)) return false;
-      const key = `${e.source}->${e.target}`;
-      return !removeEdgeKeys.has(key);
+    let updatedEdges = edges.filter((edge) => {
+      if (removeNodeIds.has(edge.source) || removeNodeIds.has(edge.target))
+        return false;
+      return !proposal.remove_edges.some(
+        (removal) =>
+          removal.source === edge.source &&
+          removal.target === edge.target &&
+          (!removal.id || removal.id === edge.id),
+      );
+    });
+
+    updatedEdges = updatedEdges.map((edge) => {
+      const update = proposal.update_edges?.find((e) => e.id === edge.id);
+      return update
+        ? {
+            ...edge,
+            ...(update.label !== undefined ? { label: update.label } : {}),
+            ...(update.relation
+              ? { data: { ...edge.data, relation: update.relation } }
+              : {}),
+          }
+        : edge;
     });
 
     // 5. Add new edges
     const newEdges: MindMapEdge[] = proposal.add_edges.map((e) => ({
-      id: `edge_${e.source}_${e.target}_${Date.now()}`,
+      id: `edge_${crypto.randomUUID()}`,
       source: e.source,
       target: e.target,
       type: "editable",
       label: e.label || "",
+      ...connectionHandles(updatedNodes, e.source, e.target),
+      ...(e.relation ? { data: { relation: e.relation } } : {}),
     }));
     updatedEdges = [...updatedEdges, ...newEdges];
 
@@ -365,13 +504,33 @@ export const useMindMapStore = create<MindMapState>((set, get) => ({
     });
     updatedEdges = updatedEdges.map((e) => {
       if ((e.data as Record<string, unknown>)?.proposalHighlight) {
-        const { proposalHighlight: _, ...rest } = e.data as Record<string, unknown>;
+        const { proposalHighlight: _, ...rest } = e.data as Record<
+          string,
+          unknown
+        >;
         return { ...e, data: rest };
       }
       return e;
     });
 
+    if (nodes.length === 0 && updatedNodes.length) {
+      const layout = getLayoutedElements(updatedNodes, updatedEdges);
+      updatedNodes = layout.nodes;
+      updatedEdges = layout.edges;
+    }
+    if (proposal.layout) {
+      const layout = layoutDocument(
+        updatedNodes,
+        updatedEdges,
+        proposal.layout,
+        proposal.layoutNodeIds,
+      );
+      updatedNodes = layout.nodes;
+      updatedEdges = layout.edges;
+    }
     set({ nodes: updatedNodes, edges: updatedEdges });
+    if (!nodes.length || proposal.layout)
+      useEditorStore.getState().requestFit();
   },
 
   performUndo: () => {

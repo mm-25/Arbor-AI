@@ -7,7 +7,7 @@ import { useMindMapStore } from "@/store/mindmap-store";
 import { useChatStore } from "@/store/chat-store";
 import { useHistoryStore } from "@/store/history-store";
 import { Button } from "@/components/ui/button";
-import { getLayoutedElements } from "@/lib/auto-layout";
+import { useEditorStore } from "@/store/editor-store";
 import ExportDesignModal from "./ExportDesignModal";
 
 /** Above this node count, skip Tidy Up animation — too many things moving at once. */
@@ -19,25 +19,55 @@ function ShapePreview({ shape, color }: { shape: string; color: string }) {
     case "circle":
       return (
         <svg width={size} height={size} viewBox="0 0 18 18">
-          <circle cx="9" cy="9" r="7" fill="none" stroke={color} strokeWidth="2" />
+          <circle
+            cx="9"
+            cy="9"
+            r="7"
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+          />
         </svg>
       );
     case "diamond":
       return (
         <svg width={size} height={size} viewBox="0 0 18 18">
-          <polygon points="9,1 17,9 9,17 1,9" fill="none" stroke={color} strokeWidth="2" />
+          <polygon
+            points="9,1 17,9 9,17 1,9"
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+          />
         </svg>
       );
     case "rounded-rect":
       return (
         <svg width={size} height={size} viewBox="0 0 18 18">
-          <rect x="1" y="4" width="16" height="10" rx="5" fill="none" stroke={color} strokeWidth="2" />
+          <rect
+            x="1"
+            y="4"
+            width="16"
+            height="10"
+            rx="5"
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+          />
         </svg>
       );
     default: // rectangle
       return (
         <svg width={size} height={size} viewBox="0 0 18 18">
-          <rect x="1" y="4" width="16" height="10" rx="2" fill="none" stroke={color} strokeWidth="2" />
+          <rect
+            x="1"
+            y="4"
+            width="16"
+            height="10"
+            rx="2"
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+          />
         </svg>
       );
   }
@@ -49,7 +79,7 @@ function DraggableNodeButton({ config }: { config: NodeTypeConfig }) {
       event.dataTransfer.setData("application/mindmap-node-type", config.type);
       event.dataTransfer.effectAllowed = "move";
     },
-    [config.type]
+    [config.type],
   );
 
   return (
@@ -66,6 +96,49 @@ function DraggableNodeButton({ config }: { config: NodeTypeConfig }) {
   );
 }
 
+function DraggableConnectorButton() {
+  const tool = useEditorStore((s) => s.tool);
+  const setTool = useEditorStore((s) => s.setTool);
+  const onDragStart = useCallback((event: DragEvent) => {
+    event.dataTransfer.setData("application/mindmap-connector", "true");
+    event.dataTransfer.effectAllowed = "move";
+  }, []);
+
+  return (
+    <button
+      type="button"
+      aria-label="Connector (C)"
+      aria-pressed={tool === "connect"}
+      onClick={() => setTool(tool === "connect" ? "select" : "connect")}
+      draggable
+      onDragStart={onDragStart}
+      className="col-span-2 flex items-center gap-2 px-2.5 py-1.5 rounded-lg border cursor-grab active:cursor-grabbing hover:shadow-md hover:border-gray-300 transition-all select-none bg-white"
+      title="Connect nodes (C) — click a source, then a target. Escape cancels."
+    >
+      <svg width="18" height="10" viewBox="0 0 18 10">
+        <line
+          x1="1"
+          y1="5"
+          x2="14"
+          y2="5"
+          stroke="#6b7280"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+        />
+        <polyline
+          points="10,1 14,5 10,9"
+          fill="none"
+          stroke="#6b7280"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      <span className="text-[11px] font-medium text-gray-600">Connector</span>
+    </button>
+  );
+}
+
 function ChatHistoryItem({
   session,
   isActive,
@@ -73,7 +146,12 @@ function ChatHistoryItem({
   onDelete,
   onRename,
 }: {
-  session: { id: string; title: string; messages: { id: string }[]; updatedAt: number };
+  session: {
+    id: string;
+    title: string;
+    messages: { id: string }[];
+    updatedAt: number;
+  };
   isActive: boolean;
   onSwitch: () => void;
   onDelete: () => void;
@@ -128,7 +206,16 @@ function ChatHistoryItem({
             className="text-gray-400 hover:text-blue-500 p-0.5"
             title="Rename"
           >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
             </svg>
@@ -142,7 +229,16 @@ function ChatHistoryItem({
             className="text-gray-400 hover:text-red-500 p-0.5"
             title="Delete"
           >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -154,7 +250,8 @@ function ChatHistoryItem({
 }
 
 export default function Sidebar() {
-  const { saveToStorage, clear, nodes, edges, performUndo, performRedo, setNodesAndEdges } = useMindMapStore();
+  const { saveToStorage, clear, nodes, edges, performUndo, performRedo } =
+    useMindMapStore();
   const {
     sessions,
     activeSessionId,
@@ -168,6 +265,8 @@ export default function Sidebar() {
   const canRedo = useHistoryStore((s) => s.future.length > 0);
 
   const [collapsed, setCollapsed] = useState(false);
+  const direction = useEditorStore((s) => s.direction);
+  const setDirection = useEditorStore((s) => s.setDirection);
   const [showExport, setShowExport] = useState(false);
 
   const nodeTypes = Object.keys(NODE_TYPE_CONFIGS) as NodeType[];
@@ -178,7 +277,7 @@ export default function Sidebar() {
       saveGraphToSession(nodes, edges);
       switchChat(sessionId);
     },
-    [nodes, edges, saveGraphToSession, switchChat]
+    [nodes, edges, saveGraphToSession, switchChat],
   );
 
   const handleNewChat = useCallback(() => {
@@ -205,38 +304,19 @@ export default function Sidebar() {
   }, [performRedo, saveGraphToSession]);
 
   const handleTidyUp = useCallback(() => {
-    const { nodes: currentNodes, edges: currentEdges } = useMindMapStore.getState();
+    const { nodes: currentNodes } = useMindMapStore.getState();
     if (currentNodes.length === 0) return;
-
-    // Reset positions so auto-layout's "only layout AI or new nodes" rule
-    // treats every node as eligible for repositioning (manual-source nodes
-    // would otherwise be preserved).
-    const resetNodes = currentNodes.map((n) => ({
-      ...n,
-      position: { x: 0, y: 0 },
-      // Also strip source flag so auto-layout can't decide to skip
-      data: { ...n.data, source: "text" as const },
-    }));
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-      resetNodes,
-      currentEdges,
-      "LR"
-    );
-
-    // Restore original source so nothing downstream thinks a manual node is now AI
-    const layoutedWithOrigSource = layoutedNodes.map((n) => {
-      const orig = currentNodes.find((c) => c.id === n.id);
-      if (!orig) return n;
-      return { ...n, data: { ...n.data, source: orig.data.source } };
-    });
 
     if (currentNodes.length <= TIDY_UP_ANIMATION_THRESHOLD) {
       useHistoryStore.getState().triggerLayoutAnimation(400);
     }
 
-    setNodesAndEdges(layoutedWithOrigSource, layoutedEdges);
-    saveGraphToSession(layoutedWithOrigSource, layoutedEdges);
-  }, [setNodesAndEdges, saveGraphToSession]);
+    useMindMapStore.getState().tidyGraph({
+      scope: "all",
+      direction: useEditorStore.getState().direction,
+      includesContent: false,
+    });
+  }, []);
 
   if (collapsed) {
     return (
@@ -246,20 +326,34 @@ export default function Sidebar() {
           className="absolute top-4 left-4 z-10 bg-white/90 backdrop-blur-sm border rounded-lg p-2 shadow-lg hover:shadow-xl transition-shadow"
           title="Open sidebar"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <line x1="3" y1="12" x2="21" y2="12" />
             <line x1="3" y1="6" x2="21" y2="6" />
             <line x1="3" y1="18" x2="21" y2="18" />
           </svg>
         </button>
-        {showExport && <ExportDesignModal onClose={() => setShowExport(false)} />}
+        {showExport && (
+          <ExportDesignModal onClose={() => setShowExport(false)} />
+        )}
       </>
     );
   }
 
   return (
     <>
-      <div className="absolute top-4 left-4 bottom-4 z-10 w-56 bg-white/95 backdrop-blur-sm border rounded-xl shadow-lg flex flex-col overflow-hidden">
+      <div
+        data-canvas-panel="left"
+        className="absolute top-4 left-4 bottom-4 z-10 w-56 bg-white/95 backdrop-blur-sm border rounded-xl shadow-lg flex flex-col overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-2.5 border-b shrink-0">
           <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
@@ -270,7 +364,16 @@ export default function Sidebar() {
             className="text-gray-400 hover:text-gray-600 p-0.5"
             title="Collapse sidebar"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
@@ -288,7 +391,16 @@ export default function Sidebar() {
                 className="text-gray-400 hover:text-blue-500 p-0.5 rounded transition-colors"
                 title="New chat"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
                   <line x1="12" y1="5" x2="12" y2="19" />
                   <line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
@@ -324,6 +436,7 @@ export default function Sidebar() {
                 config={NODE_TYPE_CONFIGS[type]}
               />
             ))}
+            <DraggableConnectorButton />
           </div>
         </div>
 
@@ -338,7 +451,17 @@ export default function Sidebar() {
               className="text-[11px] flex-1 h-7"
               title="Undo (⌘Z)"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="mr-0.5 shrink-0">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="mr-0.5 shrink-0"
+              >
                 <polyline points="1 4 1 10 7 10" />
                 <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
               </svg>
@@ -353,12 +476,39 @@ export default function Sidebar() {
               title="Redo (⌘⇧Z)"
             >
               Redo
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="ml-0.5 shrink-0">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="ml-0.5 shrink-0"
+              >
                 <polyline points="23 4 23 10 17 10" />
                 <path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10" />
               </svg>
             </Button>
           </div>
+          <label className="flex items-center justify-between text-xs text-gray-600 mb-2">
+            Layout
+            <select
+              aria-label="Layout direction"
+              value={direction}
+              onChange={(e) => {
+                setDirection(e.target.value as "AUTO" | "TB" | "LR");
+                handleTidyUp();
+              }}
+              title="Apply this layout to the current map"
+              className="border rounded px-2 py-1"
+            >
+              <option value="AUTO">Automatic</option>
+              <option value="TB">Top to bottom</option>
+              <option value="LR">Left to right</option>
+            </select>
+          </label>
           <Button
             variant="outline"
             size="sm"

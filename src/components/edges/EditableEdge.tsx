@@ -1,505 +1,337 @@
 "use client";
-
-import { useState, useRef, useEffect, useCallback } from "react";
-import { type EdgeProps, useReactFlow, EdgeLabelRenderer, getBezierPath, Position } from "@xyflow/react";
-
-interface Waypoint {
-  x: number;
-  y: number;
-}
-
+import { useState, useRef, useEffect, useId } from "react";
+import {
+  BaseEdge,
+  EdgeLabelRenderer,
+  useReactFlow,
+  useViewport,
+  type EdgeProps,
+} from "@xyflow/react";
+import { useMindMapStore } from "@/store/mindmap-store";
+import { useChatStore } from "@/store/chat-store";
+import { useConnectorEndpointDrag } from "@/hooks/useConnectorEndpointDrag";
+import { connectorGeometry } from "@/lib/connector-geometry";
+import {
+  applyConnection,
+  replaceEndpoint,
+  sameConnection,
+  edgeConnection,
+} from "@/lib/connector-endpoints";
+import { nodeBox, type Point } from "@/lib/canvas-geometry";
+import { routeConnection, roundedPath } from "@/lib/edge-routing";
 export interface EditableEdgeData {
-  waypoints?: Waypoint[];
-  parallelOffset?: number;
-  parallelAxis?: "x" | "y";
+  corners?: Point[];
+  strokeColor?: string;
+  strokeStyle?: "solid" | "dashed";
   [key: string]: unknown;
 }
 
-/**
- * Build a smooth SVG path through a sequence of points.
- * - 2 points: cubic bezier with auto-computed control points
- * - 3+ points: Catmull-Rom spline converted to cubic bezier segments
- */
-function buildSmoothPath(points: { x: number; y: number }[]): string {
-  if (points.length < 2) return "";
-
-  if (points.length === 2) {
-    // Single cubic bezier between source and target
-    const [src, tgt] = points;
-    const dx = tgt.x - src.x;
-    const dy = tgt.y - src.y;
-    // Control point offset: 40% of the distance along the major axis
-    const cx = Math.abs(dx) > Math.abs(dy) ? Math.abs(dx) * 0.4 : Math.min(80, Math.abs(dy) * 0.25);
-    const cy = Math.abs(dy) > Math.abs(dx) ? Math.abs(dy) * 0.4 : Math.min(80, Math.abs(dx) * 0.25);
-
-    // Determine control point direction based on flow
-    let cp1x: number, cp1y: number, cp2x: number, cp2y: number;
-    if (Math.abs(dx) >= Math.abs(dy)) {
-      // Mostly horizontal flow
-      cp1x = src.x + cx * Math.sign(dx || 1);
-      cp1y = src.y;
-      cp2x = tgt.x - cx * Math.sign(dx || 1);
-      cp2y = tgt.y;
-    } else {
-      // Mostly vertical flow
-      cp1x = src.x;
-      cp1y = src.y + cy * Math.sign(dy || 1);
-      cp2x = tgt.x;
-      cp2y = tgt.y - cy * Math.sign(dy || 1);
-    }
-
-    return `M ${src.x} ${src.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${tgt.x} ${tgt.y}`;
+export default function EditableEdge({ id, label, selected }: EdgeProps) {
+  const markerId = `connector-arrow-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const nodes = useMindMapStore((s) => s.nodes),
+    edges = useMindMapStore((s) => s.edges),
+    updateEdges = useMindMapStore((s) => s.updateEdges);
+  const epoch = useChatStore((s) => s.sessionEpoch),
+    { zoom } = useViewport(),
+    { screenToFlowPosition } = useReactFlow();
+  const [draft, setDraft] = useState<{
+    epoch: number;
+    corners: Point[];
+  } | null>(null);
+  const cleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => cleanup.current?.(), [epoch]);
+  const endpointDrag = useConnectorEndpointDrag(id, {
+    screenToFlow: screenToFlowPosition,
+    zoom,
+  });
+  const original = edges.find((edge) => edge.id === id);
+  let edge = original;
+  if (edge && endpointDrag.preview) {
+    const connection = replaceEndpoint(
+      edge,
+      endpointDrag.preview.end,
+      endpointDrag.preview.endpoint,
+      nodes,
+    );
+    if (connection) edge = applyConnection(edge, connection);
   }
-
-  // Catmull-Rom spline through all points → cubic bezier segments
-  // Add phantom points at the start and end for the first/last segments
-  const pts = [
-    { x: 2 * points[0].x - points[1].x, y: 2 * points[0].y - points[1].y },
-    ...points,
-    { x: 2 * points[points.length - 1].x - points[points.length - 2].x, y: 2 * points[points.length - 1].y - points[points.length - 2].y },
-  ];
-
-  const tension = 0.3; // Lower = smoother curves
-  let d = `M ${points[0].x} ${points[0].y}`;
-
-  for (let i = 1; i < pts.length - 2; i++) {
-    const p0 = pts[i - 1];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[i + 2];
-
-    const cp1x = p1.x + (p2.x - p0.x) * tension;
-    const cp1y = p1.y + (p2.y - p0.y) * tension;
-    const cp2x = p2.x - (p3.x - p1.x) * tension;
-    const cp2y = p2.y - (p3.y - p1.y) * tension;
-
-    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+  const edgeData = edge?.data as EditableEdgeData | undefined;
+  const corners = draft?.epoch === epoch ? draft.corners : edgeData?.corners;
+  let geometry = edge ? connectorGeometry(edge, nodes, corners) : null;
+  if (!edge || !geometry) return null;
+  const parallel = edges.filter((other) =>
+    sameConnection(edgeConnection(other), edgeConnection(edge!)),
+  );
+  if (!corners?.length && !endpointDrag.preview && parallel.length > 1) {
+    const lane =
+      (parallel.findIndex((e) => e.id === id) - (parallel.length - 1) / 2) * 32;
+    const horizontal =
+      geometry.sourceSide === "left" ||
+      geometry.sourceSide === "right" ||
+      Math.abs(geometry.a.x - geometry.b.x) >=
+        Math.abs(geometry.a.y - geometry.b.y);
+    let point = {
+      x: (geometry.a.x + geometry.b.x) / 2 + (horizontal ? 0 : lane),
+      y: (geometry.a.y + geometry.b.y) / 2 + (horizontal ? lane : 0),
+    };
+    for (
+      let i = 0;
+      i < 20 &&
+      geometry.obstacles.some(
+        (r) =>
+          point.x > r.x &&
+          point.x < r.x + r.width &&
+          point.y > r.y &&
+          point.y < r.y + r.height,
+      );
+      i++
+    )
+      point = { x: point.x + 32, y: point.y + 32 };
+    geometry = connectorGeometry(edge, nodes, [point])!;
   }
-
-  return d;
-}
-
-export default function EditableEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  data,
-  label,
-  selected,
-  markerEnd,
-}: EdgeProps) {
-  const { setEdges, screenToFlowPosition } = useReactFlow();
-  const edgeData = data as EditableEdgeData | undefined;
-  const waypoints: Waypoint[] = edgeData?.waypoints ?? [];
-  const proposalHighlight = edgeData?.proposalHighlight as "update" | "remove" | undefined;
-
-  const parallelOffset = (edgeData?.parallelOffset as number) ?? 0;
-  const parallelAxis = (edgeData?.parallelAxis as "x" | "y") ?? "y";
-  const edgeHighlightClass = proposalHighlight === "update"
-    ? "proposal-edge-update"
-    : proposalHighlight === "remove"
-    ? "proposal-edge-remove"
-    : "";
-
-  // Build edge path:
-  // - With waypoints: Catmull-Rom spline through all points
-  // - Parallel edges (same source handle): custom bezier with offset CONTROL POINTS
-  //   so all edges leave from the same handle point but fan out into separate curves
-  // - Single edge: React Flow's getBezierPath (respects handle direction)
-  const allPoints = [
-    { x: sourceX, y: sourceY },
-    ...waypoints,
-    { x: targetX, y: targetY },
-  ];
-
-  const edgePath = (() => {
-    if (waypoints.length > 0) return buildSmoothPath(allPoints);
-
-    if (parallelOffset !== 0) {
-      // Offset control points perpendicularly — endpoints stay at the actual handles
-      const dx = targetX - sourceX;
-      const dy = targetY - sourceY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const curvature = Math.min(Math.max(dist * 0.4, 40), 160);
-
-      // Control point direction follows the handle orientation
-      const srcPos = sourcePosition ?? Position.Right;
-      const tgtPos = targetPosition ?? Position.Left;
-      const srcVec = srcPos === Position.Right  ? { x: 1,  y: 0 }
-                   : srcPos === Position.Left   ? { x: -1, y: 0 }
-                   : srcPos === Position.Bottom ? { x: 0,  y: 1 }
-                   :                              { x: 0,  y: -1 };
-      const tgtVec = tgtPos === Position.Left   ? { x: -1, y: 0 }
-                   : tgtPos === Position.Right  ? { x: 1,  y: 0 }
-                   : tgtPos === Position.Top    ? { x: 0,  y: -1 }
-                   :                              { x: 0,  y: 1 };
-
-      const perpOff = parallelAxis === "y" ? { x: 0, y: parallelOffset } : { x: parallelOffset, y: 0 };
-
-      const cp1x = sourceX + srcVec.x * curvature + perpOff.x;
-      const cp1y = sourceY + srcVec.y * curvature + perpOff.y;
-      const cp2x = targetX + tgtVec.x * curvature + perpOff.x;
-      const cp2y = targetY + tgtVec.y * curvature + perpOff.y;
-
-      return `M ${sourceX} ${sourceY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${targetX} ${targetY}`;
-    }
-
-    return getBezierPath({
-      sourceX,
-      sourceY,
-      sourcePosition: sourcePosition ?? Position.Right,
-      targetX,
-      targetY,
-      targetPosition: targetPosition ?? Position.Left,
-    })[0];
-  })();
-
-  // Drag a waypoint to reposition it
-  const onWaypointMouseDown = (
-    event: React.MouseEvent,
-    waypointIndex: number
-  ) => {
-    event.stopPropagation();
+  const { points, a, b, sourceSide, targetSide, obstacles } = geometry;
+  const segments = points.slice(0, -1).map((p, i) => ({
+    a: p,
+    b: points[i + 1],
+    i,
+    length: Math.hypot(points[i + 1].x - p.x, points[i + 1].y - p.y),
+  }));
+  const longest = [...segments].sort((a, b) => b.length - a.length)[0];
+  const labelPoint = longest
+    ? { x: (longest.a.x + longest.b.x) / 2, y: (longest.a.y + longest.b.y) / 2 }
+    : a;
+  const startSegment = (event: React.MouseEvent, index: number) => {
     event.preventDefault();
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const flowPos = screenToFlowPosition({
-        x: ev.clientX,
-        y: ev.clientY,
+    event.stopPropagation();
+    cleanup.current?.();
+    const original = points.slice(1, -1).map((p) => ({ ...p })),
+      horizontal = points[index].y === points[index + 1].y;
+    let latest = original,
+      moved = false;
+    const move = (event: MouseEvent) => {
+      const point = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
       });
-
-      setEdges((edges) =>
-        edges.map((e) => {
-          if (e.id !== id) return e;
-          const newWaypoints = [
-            ...((e.data as EditableEdgeData)?.waypoints ?? []),
-          ];
-          newWaypoints[waypointIndex] = flowPos;
-          return { ...e, data: { ...e.data, waypoints: newWaypoints } };
-        })
+      latest = original.map((p) => ({ ...p }));
+      for (const at of [index - 1, index])
+        if (latest[at])
+          latest[at] = horizontal
+            ? { ...latest[at], y: point.y }
+            : { ...latest[at], x: point.x };
+      moved ||= JSON.stringify(latest) !== JSON.stringify(original);
+      setDraft({ epoch, corners: latest });
+    };
+    const end = () => {
+      cleanup.current?.();
+      setDraft(null);
+      if (!moved || epoch !== useChatStore.getState().sessionEpoch) return;
+      const route = routeConnection(
+        a,
+        b,
+        sourceSide,
+        targetSide,
+        obstacles,
+        latest,
       );
+      if (!route.blocked && !route.adjusted)
+        updateEdges((edges) =>
+          edges.map((e) =>
+            e.id === id ? { ...e, data: { ...e.data, corners: latest } } : e,
+          ),
+        );
     };
-
-    const onMouseUp = () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  };
-
-  // Right-click a waypoint to remove it
-  const onWaypointContextMenu = (
-    event: React.MouseEvent,
-    waypointIndex: number
-  ) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    setEdges((edges) =>
-      edges.map((e) => {
-        if (e.id !== id) return e;
-        const newWaypoints = [
-          ...((e.data as EditableEdgeData)?.waypoints ?? []),
-        ];
-        newWaypoints.splice(waypointIndex, 1);
-        return { ...e, data: { ...e.data, waypoints: newWaypoints } };
-      })
-    );
-  };
-
-  // When selected and no waypoints, show a draggable midpoint handle to start bending
-  const midX = (sourceX + targetX) / 2;
-  const midY = (sourceY + targetY) / 2;
-
-  const onMidpointMouseDown = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    event.preventDefault();
-
-    // Insert a waypoint at the midpoint and immediately start dragging it
-    const flowPos = screenToFlowPosition({
-      x: event.clientX,
-      y: event.clientY,
-    });
-
-    setEdges((edges) =>
-      edges.map((e) => {
-        if (e.id !== id) return e;
-        return { ...e, data: { ...e.data, waypoints: [flowPos] } };
-      })
-    );
-
-    // Start drag for the new waypoint (index 0)
-    const onMouseMove = (ev: MouseEvent) => {
-      const pos = screenToFlowPosition({
-        x: ev.clientX,
-        y: ev.clientY,
-      });
-
-      setEdges((edges) =>
-        edges.map((e) => {
-          if (e.id !== id) return e;
-          return { ...e, data: { ...e.data, waypoints: [pos] } };
-        })
-      );
-    };
-
-    const onMouseUp = () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  };
-
-  // Label position: midpoint of the full path
-  const labelMidIdx = Math.floor(allPoints.length / 2);
-  const labelX =
-    allPoints.length % 2 === 0
-      ? (allPoints[labelMidIdx - 1].x + allPoints[labelMidIdx].x) / 2
-      : allPoints[labelMidIdx].x;
-  const labelY =
-    allPoints.length % 2 === 0
-      ? (allPoints[labelMidIdx - 1].y + allPoints[labelMidIdx].y) / 2
-      : allPoints[labelMidIdx].y;
-
-  // Edge label editing
-  const [isEditingLabel, setIsEditingLabel] = useState(false);
-  const [editLabelValue, setEditLabelValue] = useState(
-    typeof label === "string" ? label : ""
-  );
-  const labelInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (isEditingLabel && labelInputRef.current) {
-      labelInputRef.current.focus();
-      labelInputRef.current.select();
-    }
-  }, [isEditingLabel]);
-
-  const handleLabelDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      setEditLabelValue(typeof label === "string" ? label : "");
-      setIsEditingLabel(true);
-    },
-    [label]
-  );
-
-  const commitLabel = useCallback(() => {
-    const trimmed = editLabelValue.trim();
-    setEdges((edges) =>
-      edges.map((e) => (e.id === id ? { ...e, label: trimmed } : e))
-    );
-    setIsEditingLabel(false);
-  }, [editLabelValue, id, setEdges]);
-
-  const handleLabelKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commitLabel();
-      } else if (e.key === "Escape") {
-        setIsEditingLabel(false);
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        cleanup.current?.();
+        setDraft(null);
       }
-    },
-    [commitLabel]
+    };
+    cleanup.current = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", end);
+      window.removeEventListener("keydown", cancel);
+      cleanup.current = null;
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    window.addEventListener("keydown", cancel);
+  };
+  const highlight = edgeData?.proposalHighlight;
+  const snapEndpoint = endpointDrag.preview?.endpoint;
+  const snapNode =
+    snapEndpoint?.kind === "node"
+      ? nodes.find((n) => n.id === snapEndpoint.nodeId)
+      : undefined;
+  const snapBox = snapNode ? nodeBox(snapNode, 4) : null;
+  const connectedToSelection = nodes.some(
+    (node) =>
+      node.selected && (node.id === edge.source || node.id === edge.target),
   );
-
+  const focused = selected || connectedToSelection;
+  const stroke = focused ? "#2563eb" : (edgeData?.strokeColor ?? "#64748b");
   return (
     <>
-      {/* Invisible wide path for easier clicking */}
-      <path
-        d={edgePath}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={20}
-        style={{ cursor: "pointer" }}
+      <defs>
+        <marker
+          id={markerId}
+          viewBox="0 0 10 10"
+          refX="10"
+          refY="5"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 Z" fill={stroke} />
+        </marker>
+      </defs>
+      <BaseEdge
+        path={roundedPath(points)}
+        markerEnd={`url(#${markerId})`}
+        interactionWidth={24 / zoom}
+        style={{
+          stroke,
+          strokeWidth: focused ? 2.5 : 1.75,
+          strokeDasharray:
+            edgeData?.strokeStyle === "dashed" ? "6 4" : undefined,
+        }}
+        className={highlight ? `proposal-edge-${highlight}` : undefined}
       />
-      {/* Visible edge line */}
-      <path
-        d={edgePath}
-        fill="none"
-        stroke={proposalHighlight ? undefined : selected ? "#3b82f6" : "#94a3b8"}
-        strokeWidth={proposalHighlight ? undefined : selected ? 2.5 : 2}
-        markerEnd={markerEnd}
-        className={`react-flow__edge-path ${edgeHighlightClass}`}
-      />
-
-      {selected && (
-        <EdgeLabelRenderer>
-          {/* If no waypoints exist, show a midpoint handle the user can drag to bend */}
-          {waypoints.length === 0 && (
-            <div
-              className="absolute pointer-events-auto"
-              style={{
-                transform: `translate(-50%, -50%) translate(${midX}px, ${midY}px)`,
-              }}
-            >
-              <div
-                className="w-4 h-4 rounded-full bg-white border-2 border-blue-500 cursor-grab active:cursor-grabbing hover:scale-125 transition-transform shadow-sm"
-                onMouseDown={onMidpointMouseDown}
-                title="Drag to bend edge"
-              />
-            </div>
-          )}
-
-          {/* Render existing waypoint control points */}
-          {waypoints.map((wp, i) => (
-            <div
-              key={`wp-${id}-${i}`}
-              className="absolute pointer-events-auto"
-              style={{
-                transform: `translate(-50%, -50%) translate(${wp.x}px, ${wp.y}px)`,
-              }}
-            >
-              <div
-                className="w-4 h-4 rounded-full bg-white border-2 border-blue-500 cursor-grab active:cursor-grabbing hover:scale-125 transition-transform shadow-sm"
-                onMouseDown={(e) => onWaypointMouseDown(e, i)}
-                onContextMenu={(e) => onWaypointContextMenu(e, i)}
-                title="Drag to move · Right-click to remove"
-              />
-            </div>
-          ))}
-
-          {/* Show segment midpoints for adding more waypoints */}
-          {waypoints.length > 0 &&
-            allPoints.slice(0, -1).map((pt, i) => {
-              const nextPt = allPoints[i + 1];
-              const segMidX = (pt.x + nextPt.x) / 2;
-              const segMidY = (pt.y + nextPt.y) / 2;
-
-              // Don't show if too close to an existing waypoint
-              const tooClose = waypoints.some(
-                (wp) => Math.hypot(wp.x - segMidX, wp.y - segMidY) < 30
-              );
-              if (tooClose) return null;
-
-              return (
-                <div
-                  key={`seg-${id}-${i}`}
-                  className="absolute pointer-events-auto"
-                  style={{
-                    transform: `translate(-50%, -50%) translate(${segMidX}px, ${segMidY}px)`,
-                  }}
-                >
-                  <div
-                    className="w-3 h-3 rounded-full bg-blue-100 border border-blue-300 cursor-grab active:cursor-grabbing hover:bg-blue-200 hover:scale-125 transition-all opacity-60 hover:opacity-100"
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-
-                      const pos = screenToFlowPosition({
-                        x: e.clientX,
-                        y: e.clientY,
-                      });
-
-                      // Insert waypoint at this segment
-                      // The waypoint index to insert at = i (because allPoints[0] is source, allPoints[1..n] are waypoints, allPoints[n+1] is target)
-                      // segment i connects allPoints[i] to allPoints[i+1]
-                      // waypoint index = i for segments after source (segment 0 inserts at waypoint 0, segment 1 at waypoint 1, etc.)
-                      const insertIdx = i;
-
-                      setEdges((edges) =>
-                        edges.map((edge) => {
-                          if (edge.id !== id) return edge;
-                          const wps = [
-                            ...((edge.data as EditableEdgeData)?.waypoints ?? []),
-                          ];
-                          wps.splice(insertIdx, 0, pos);
-                          return { ...edge, data: { ...edge.data, waypoints: wps } };
-                        })
-                      );
-
-                      // Start dragging the newly inserted waypoint
-                      const onMouseMove = (ev: MouseEvent) => {
-                        const flowPos = screenToFlowPosition({
-                          x: ev.clientX,
-                          y: ev.clientY,
-                        });
-                        setEdges((edges) =>
-                          edges.map((edge) => {
-                            if (edge.id !== id) return edge;
-                            const wps = [
-                              ...((edge.data as EditableEdgeData)?.waypoints ?? []),
-                            ];
-                            wps[insertIdx] = flowPos;
-                            return { ...edge, data: { ...edge.data, waypoints: wps } };
-                          })
-                        );
-                      };
-
-                      const onMouseUp = () => {
-                        window.removeEventListener("mousemove", onMouseMove);
-                        window.removeEventListener("mouseup", onMouseUp);
-                      };
-
-                      window.addEventListener("mousemove", onMouseMove);
-                      window.addEventListener("mouseup", onMouseUp);
-                    }}
-                    title="Drag to add waypoint"
-                  />
-                </div>
-              );
-            })}
-        </EdgeLabelRenderer>
+      {snapBox && (
+        <rect
+          {...snapBox}
+          fill="none"
+          stroke="#2563eb"
+          strokeWidth={2 / zoom}
+          strokeDasharray={`${4 / zoom} ${3 / zoom}`}
+          pointerEvents="none"
+        />
       )}
-
-      {/* Edge label — editable on double-click */}
       <EdgeLabelRenderer>
-        {isEditingLabel ? (
+        {selected &&
+          (
+            [
+              ["source", a],
+              ["target", b],
+            ] as const
+          ).map(([end, point]) => (
+            <button
+              key={end}
+              type="button"
+              data-endpoint-control="true"
+              aria-label={`Move connection ${end === "source" ? "start" : "end"}`}
+              title="Drag to move freely or attach to a node. Hold Alt to keep free. Arrow keys nudge freely."
+              className="nodrag nopan absolute pointer-events-auto flex items-center justify-center"
+              style={{
+                left: 0,
+                top: 0,
+                transformOrigin: "0 0",
+                width: 28,
+                height: 28,
+                zIndex: 1001,
+                touchAction: "none",
+                cursor: endpointDrag.preview ? "grabbing" : "grab",
+                transform: `translate(${point.x}px,${point.y}px) scale(${1 / zoom}) translate(-50%,-50%)`,
+              }}
+              onPointerDown={(event) => endpointDrag.start(event, end)}
+              onKeyDown={(event) => {
+                const delta =
+                  event.key === "ArrowLeft"
+                    ? { x: -1, y: 0 }
+                    : event.key === "ArrowRight"
+                      ? { x: 1, y: 0 }
+                      : event.key === "ArrowUp"
+                        ? { x: 0, y: -1 }
+                        : event.key === "ArrowDown"
+                          ? { x: 0, y: 1 }
+                          : null;
+                if (delta) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const step = event.shiftKey ? 10 : 1;
+                  endpointDrag.nudge(end, {
+                    x: delta.x * step,
+                    y: delta.y * step,
+                  });
+                }
+              }}
+            >
+              <span className="w-3 h-3 rounded-full bg-white border-2 border-blue-600 pointer-events-none" />
+            </button>
+          ))}
+        {selected &&
+          !endpointDrag.preview &&
+          segments
+            .filter(
+              (s) => s.i > 0 && s.i < points.length - 2 && s.length * zoom > 24,
+            )
+            .map((s) => (
+              <div
+                key={s.i}
+                role="button"
+                aria-label="Adjust connector segment"
+                title="Drag to adjust route"
+                className="nodrag nopan absolute pointer-events-auto flex items-center justify-center"
+                style={{
+                  left: 0,
+                  top: 0,
+                  transformOrigin: "0 0",
+                  width: 24,
+                  height: 24,
+                  transform: `translate(${(s.a.x + s.b.x) / 2}px,${(s.a.y + s.b.y) / 2}px) scale(${1 / zoom}) translate(-50%,-50%)`,
+                  cursor: s.a.y === s.b.y ? "ns-resize" : "ew-resize",
+                }}
+                onMouseDown={(event) => startSegment(event, s.i)}
+              >
+                <span
+                  className="bg-white border-2 border-blue-500 rounded-sm"
+                  style={{
+                    width: s.a.y === s.b.y ? 14 : 6,
+                    height: s.a.y === s.b.y ? 6 : 14,
+                  }}
+                />
+              </div>
+            ))}
+        {typeof label === "string" && !!label && (
           <div
-            className="absolute pointer-events-auto"
+            className={`absolute text-xs bg-white/95 rounded px-1 ${selected ? "pointer-events-auto cursor-text" : "pointer-events-none"}`}
             style={{
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              transform: `translate(-50%,-50%) translate(${labelPoint.x}px,${labelPoint.y - (selected ? 24 / zoom : 0)}px)`,
             }}
-          >
-            <input
-              ref={labelInputRef}
-              value={editLabelValue}
-              onChange={(e) => setEditLabelValue(e.target.value)}
-              onBlur={commitLabel}
-              onKeyDown={handleLabelKeyDown}
-              className="text-xs bg-white border border-blue-400 rounded px-1.5 py-0.5 shadow-sm outline-none ring-1 ring-blue-300 min-w-[60px] text-center"
-              placeholder="Add label..."
-            />
-          </div>
-        ) : label ? (
-          <div
-            className={`absolute text-xs bg-white/80 px-1 rounded ${
-              selected ? "pointer-events-auto cursor-text hover:bg-blue-50" : "pointer-events-none"
-            }`}
-            style={{
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-            }}
-            onDoubleClick={selected ? handleLabelDoubleClick : undefined}
+            onDoubleClick={() =>
+              document.getElementById(`edge-label-${id}`)?.focus()
+            }
           >
             {label}
           </div>
-        ) : selected ? (
+        )}
+        {endpointDrag.preview && (
           <div
-            className="absolute pointer-events-auto"
+            role="status"
+            className="absolute bg-blue-50 text-blue-800 text-xs px-2 py-1 rounded pointer-events-none"
             style={{
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + 18}px)`,
+              transform: `translate(${(endpointDrag.preview.end === "source" ? a : b).x}px,${(endpointDrag.preview.end === "source" ? a : b).y}px) scale(${1 / zoom}) translate(14px,-24px)`,
             }}
           >
-            <button
-              className="text-[10px] text-gray-400 hover:text-blue-500 bg-white/80 hover:bg-blue-50 border border-dashed border-gray-300 hover:border-blue-400 rounded px-1.5 py-0.5 transition-colors"
-              onDoubleClick={handleLabelDoubleClick}
-              onClick={handleLabelDoubleClick}
-              title="Add label"
-            >
-              + label
-            </button>
+            {snapNode ? `Attach to ${snapNode.data.label}` : "Free endpoint"}
           </div>
-        ) : null}
+        )}
+        {selected &&
+          !endpointDrag.preview &&
+          (geometry.blocked || geometry.adjusted) && (
+            <div
+              role="status"
+              className="absolute text-xs text-amber-800 bg-amber-50 px-2 py-1 rounded pointer-events-none"
+              style={{
+                transform: `translate(${labelPoint.x}px,${labelPoint.y + 24}px) scale(${1 / zoom})`,
+              }}
+            >
+              {geometry.blocked
+                ? "Overlapping nodes block this route"
+                : "Stored bends blocked — use Reset route"}
+            </div>
+          )}
       </EdgeLabelRenderer>
     </>
   );

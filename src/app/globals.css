@@ -130,7 +130,9 @@
   opacity: 0 !important;
   transition: opacity 0.15s ease !important;
 }
-.react-flow__node:hover .node-handle {
+.react-flow__node:hover .node-handle,
+.react-flow__node.selected .node-handle,
+.react-flow__node:focus-within .node-handle {
   opacity: 1 !important;
 }
 
@@ -142,12 +144,22 @@
 
 /* Proposal highlight animations — nodes */
 @keyframes proposal-pulse-update {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.5); }
-  50% { box-shadow: 0 0 0 10px rgba(168, 85, 247, 0); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(168, 85, 247, 0);
+  }
 }
 @keyframes proposal-pulse-remove {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
-  50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
 }
 .proposal-highlight-update {
   animation: proposal-pulse-update 1.5s ease-in-out infinite;
@@ -163,12 +175,26 @@
 
 /* Proposal highlight animations — edges */
 @keyframes proposal-edge-pulse-update {
-  0%, 100% { stroke: #a855f7; stroke-opacity: 1; }
-  50% { stroke: #a855f7; stroke-opacity: 0.4; }
+  0%,
+  100% {
+    stroke: #a855f7;
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke: #a855f7;
+    stroke-opacity: 0.4;
+  }
 }
 @keyframes proposal-edge-pulse-remove {
-  0%, 100% { stroke: #ef4444; stroke-opacity: 1; }
-  50% { stroke: #ef4444; stroke-opacity: 0.4; }
+  0%,
+  100% {
+    stroke: #ef4444;
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke: #ef4444;
+    stroke-opacity: 0.4;
+  }
 }
 .proposal-edge-update {
   animation: proposal-edge-pulse-update 1.5s ease-in-out infinite;

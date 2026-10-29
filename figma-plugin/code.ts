@@ -69,7 +69,10 @@ function getCurveControls(
   const dist = Math.sqrt((tgt.x - src.x) ** 2 + (tgt.y - src.y) ** 2);
   const curve = Math.max(40, Math.min(dist * 0.4, 150));
 
-  let cp1x = src.x, cp1y = src.y, cp2x = tgt.x, cp2y = tgt.y;
+  let cp1x = src.x,
+    cp1y = src.y,
+    cp2x = tgt.x,
+    cp2y = tgt.y;
   if (src.side === "right") cp1x += curve;
   else if (src.side === "left") cp1x -= curve;
   else if (src.side === "bottom") cp1y += curve;
@@ -95,6 +98,8 @@ interface MapNode {
 }
 
 interface MapEdge {
+  sourcePoint?: { x: number; y: number };
+  targetPoint?: { x: number; y: number };
   source: string;
   target: string;
   label?: string;
@@ -111,7 +116,9 @@ interface MapPayload {
 
 figma.showUI(__html__, { width: 420, height: 520 });
 
-figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefined) => {
+figma.ui.onmessage = async (
+  msg: { type: string; payload?: MapPayload } | undefined,
+) => {
   if (!msg) return;
   if (msg.type === "cancel") {
     figma.closePlugin();
@@ -122,8 +129,7 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
   const data = msg.payload;
 
   // Detect editor type to choose connector strategy
-  const isFigJam = (figma as any).editorType === "figjam";
-  const hasCreateConnector = typeof (figma as any).createConnector === "function";
+  const hasCreateConnector = typeof figma.createConnector === "function";
 
   try {
     // Load all Inter font styles needed by both editors.
@@ -185,24 +191,33 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
     for (const edge of data.edges) {
       const srcFrame = frameMap[edge.source];
       const tgtFrame = frameMap[edge.target];
-      if (!srcFrame || !tgtFrame) continue;
+      if ((!srcFrame && !edge.sourcePoint) || (!tgtFrame && !edge.targetPoint))
+        continue;
+      const srcCenter = edge.sourcePoint ?? {
+        x: srcFrame!.x + srcFrame!.width / 2,
+        y: srcFrame!.y + srcFrame!.height / 2,
+      };
+      const tgtCenter = edge.targetPoint ?? {
+        x: tgtFrame!.x + tgtFrame!.width / 2,
+        y: tgtFrame!.y + tgtFrame!.height / 2,
+      };
 
       if (hasCreateConnector) {
         // ── FigJam / unified editor: use native connectors ──────────
-        const connector = (figma as any).createConnector();
-        connector.connectorStart = {
-          endpointNodeId: srcFrame.id,
-          magnet: "AUTO",
-        };
-        connector.connectorEnd = {
-          endpointNodeId: tgtFrame.id,
-          magnet: "AUTO",
-        };
+        const connector = figma.createConnector();
+        connector.connectorStart = srcFrame
+          ? { endpointNodeId: srcFrame.id, magnet: "AUTO" }
+          : { position: srcCenter };
+        connector.connectorEnd = tgtFrame
+          ? { endpointNodeId: tgtFrame.id, magnet: "AUTO" }
+          : { position: tgtCenter };
         connector.strokes = [{ type: "SOLID", color: hexToRgb("#94a3b8") }];
         connector.strokeWeight = 2;
 
         // Set arrowhead on target end
-        try { connector.connectorEndStrokeCap = "ARROW_EQUILATERAL"; } catch (_) {}
+        try {
+          connector.connectorEndStrokeCap = "ARROW_EQUILATERAL";
+        } catch (_) {}
 
         allCreated.push(connector);
 
@@ -210,11 +225,13 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
         if (edge.label) {
           try {
             connector.text.characters = edge.label;
-            connector.text.fills = [{ type: "SOLID", color: hexToRgb("#64748b") }];
+            connector.text.fills = [
+              { type: "SOLID", color: hexToRgb("#64748b") },
+            ];
           } catch (_) {
             // If connector text API not available, place a separate label
-            const midX = (srcFrame.x + srcFrame.width / 2 + tgtFrame.x + tgtFrame.width / 2) / 2;
-            const midY = (srcFrame.y + srcFrame.height / 2 + tgtFrame.y + tgtFrame.height / 2) / 2;
+            const midX = (srcCenter.x + tgtCenter.x) / 2;
+            const midY = (srcCenter.y + tgtCenter.y) / 2;
             const edgeLabel = figma.createText();
             edgeLabel.characters = edge.label;
             edgeLabel.fontName = { family: "Inter", style: "Regular" };
@@ -227,14 +244,21 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
         }
       } else {
         // ── Figma Design: draw S-curve vector paths ─────────────────
-        const tgtCx = tgtFrame.x + tgtFrame.width / 2;
-        const tgtCy = tgtFrame.y + tgtFrame.height / 2;
-        const srcCx = srcFrame.x + srcFrame.width / 2;
-        const srcCy = srcFrame.y + srcFrame.height / 2;
+        const tgtCx = tgtCenter.x;
+        const tgtCy = tgtCenter.y;
+        const srcCx = srcCenter.x;
+        const srcCy = srcCenter.y;
 
-        const srcAnchor = getAnchorPoint(srcFrame, tgtCx, tgtCy);
-        const tgtAnchor = getAnchorPoint(tgtFrame, srcCx, srcCy);
-        const { cp1x, cp1y, cp2x, cp2y } = getCurveControls(srcAnchor, tgtAnchor);
+        const srcAnchor = srcFrame
+          ? getAnchorPoint(srcFrame, tgtCx, tgtCy)
+          : { ...srcCenter, side: tgtCx >= srcCx ? "right" : "left" };
+        const tgtAnchor = tgtFrame
+          ? getAnchorPoint(tgtFrame, srcCx, srcCy)
+          : { ...tgtCenter, side: tgtCx >= srcCx ? "left" : "right" };
+        const { cp1x, cp1y, cp2x, cp2y } = getCurveControls(
+          srcAnchor,
+          tgtAnchor,
+        );
 
         // Bounding box with padding for arrowhead
         const pad = 14;
@@ -244,10 +268,14 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
         const maxY = Math.max(srcAnchor.y, cp1y, cp2y, tgtAnchor.y) + pad;
 
         // Local coords
-        const lsx = srcAnchor.x - minX, lsy = srcAnchor.y - minY;
-        const lc1x = cp1x - minX, lc1y = cp1y - minY;
-        const lc2x = cp2x - minX, lc2y = cp2y - minY;
-        const ltx = tgtAnchor.x - minX, lty = tgtAnchor.y - minY;
+        const lsx = srcAnchor.x - minX,
+          lsy = srcAnchor.y - minY;
+        const lc1x = cp1x - minX,
+          lc1y = cp1y - minY;
+        const lc2x = cp2x - minX,
+          lc2y = cp2y - minY;
+        const ltx = tgtAnchor.x - minX,
+          lty = tgtAnchor.y - minY;
 
         // Arrowhead triangle at target end
         const angle = Math.atan2(lty - lc2y, ltx - lc2x);
@@ -260,7 +288,7 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
         const ay2 = lty + Math.sin(a2a) * aSize;
 
         const connector = figma.createVector();
-        connector.name = `${srcFrame.name} → ${tgtFrame.name}`;
+        connector.name = `${srcFrame?.name ?? "Free start"} → ${tgtFrame?.name ?? "Free end"}`;
         connector.x = minX;
         connector.y = minY;
         connector.vectorPaths = [
@@ -273,7 +301,7 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
             data: `M ${ltx} ${lty} L ${ax1} ${ay1} L ${ax2} ${ay2} Z`,
           },
         ];
-        connector.resize((maxX - minX) || 1, (maxY - minY) || 1);
+        connector.resize(maxX - minX || 1, maxY - minY || 1);
         const strokeColor = hexToRgb("#94a3b8");
         connector.strokes = [{ type: "SOLID", color: strokeColor }];
         connector.strokeWeight = 2;
@@ -283,8 +311,16 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
         // Edge label
         if (edge.label) {
           const mt = 0.5;
-          const midX = (1-mt)**3*srcAnchor.x + 3*(1-mt)**2*mt*cp1x + 3*(1-mt)*mt**2*cp2x + mt**3*tgtAnchor.x;
-          const midY = (1-mt)**3*srcAnchor.y + 3*(1-mt)**2*mt*cp1y + 3*(1-mt)*mt**2*cp2y + mt**3*tgtAnchor.y;
+          const midX =
+            (1 - mt) ** 3 * srcAnchor.x +
+            3 * (1 - mt) ** 2 * mt * cp1x +
+            3 * (1 - mt) * mt ** 2 * cp2x +
+            mt ** 3 * tgtAnchor.x;
+          const midY =
+            (1 - mt) ** 3 * srcAnchor.y +
+            3 * (1 - mt) ** 2 * mt * cp1y +
+            3 * (1 - mt) * mt ** 2 * cp2y +
+            mt ** 3 * tgtAnchor.y;
           const edgeLabel = figma.createText();
           edgeLabel.characters = edge.label;
           edgeLabel.fontName = { family: "Inter", style: "Regular" };
@@ -308,7 +344,7 @@ figma.ui.onmessage = async (msg: { type: string; payload?: MapPayload } | undefi
     const edgeCount = data.edges ? data.edges.length : 0;
     const mode = hasCreateConnector ? "native connectors" : "vector arrows";
     figma.notify(
-      `Imported ${data.nodes.length} node(s) and ${edgeCount} edge(s) using ${mode}.`
+      `Imported ${data.nodes.length} node(s) and ${edgeCount} edge(s) using ${mode}.`,
     );
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

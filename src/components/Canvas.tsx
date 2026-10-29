@@ -1,34 +1,60 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import { initializeWorkspace } from "@/lib/workspace";
+import { connectEndpoints } from "@/lib/connector";
+import { translateEdgeGeometry } from "@/lib/edge-routing";
+import { useEditorStore } from "@/store/editor-store";
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useMemo,
+  useState,
+  type DragEvent,
+} from "react";
 import {
   ReactFlow,
   Background,
-  Controls,
-  MiniMap,
   BackgroundVariant,
   ConnectionMode,
   SelectionMode,
   useReactFlow,
+  useStoreApi,
+  useViewport,
   type NodeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { useMindMapStore, type NodeType, type MindMapNode, type MindMapEdge } from "@/store/mindmap-store";
+import {
+  useMindMapStore,
+  type NodeType,
+  type MindMapNode,
+  type MindMapEdge,
+} from "@/store/mindmap-store";
 import { useChatStore } from "@/store/chat-store";
 import { useHistoryStore } from "@/store/history-store";
-import { useWireframeStore } from "@/store/wireframe-store";
 import MindMapNodeComponent from "./nodes/MindMapNode";
-import { NODE_TYPE_CONFIGS, getNodeVisualConfig } from "./nodes/node-config";
+import { NODE_TYPE_CONFIGS } from "./nodes/node-config";
 import Sidebar from "./Sidebar";
 import ChatPanel from "./ChatPanel";
 import EditableEdge from "./edges/EditableEdge";
+import ConnectorAnchor from "./nodes/ConnectorAnchor";
+import {
+  connectorView,
+  documentBounds,
+  connectionFromEndpoints,
+  type ConnectorEndpoint,
+} from "@/lib/connector-endpoints";
+import { connectorGeometry } from "@/lib/connector-geometry";
+import { roundedPath } from "@/lib/edge-routing";
+import type { Point } from "@/lib/canvas-geometry";
 import NodeContextMenu from "./NodeContextMenu";
 import CanvasContextMenu from "./CanvasContextMenu";
-import DesignView from "./DesignView";
+import CanvasNavigation from "./CanvasNavigation";
 
 const nodeTypes = {
   mindMapNode: MindMapNodeComponent,
+  connectorAnchor: ConnectorAnchor,
 };
 
 const edgeTypes = {
@@ -40,19 +66,14 @@ function getNextNodeId() {
   return `node_${Date.now()}_${nodeIdCounter++}`;
 }
 
-// Generic node labels that need clarifying questions before wireframe generation
-const GENERIC_LABELS = new Set([
-  "Rectangle", "Rounded", "Circle", "Diamond",
-  "rectangle", "rounded", "circle", "diamond",
-  "New Node", "Untitled",
-]);
-
 // Paste offset when using keyboard shortcut (stacks nicely on repeat paste)
 const PASTE_OFFSET = 20;
 
 export default function Canvas() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
+  const flowStore = useStoreApi();
+  const { zoom, x: viewportX, y: viewportY } = useViewport();
 
   const {
     nodes,
@@ -61,30 +82,29 @@ export default function Canvas() {
     onEdgesChange,
     onConnect,
     addNode,
-    addNodesAndEdges,
     setNodesAndEdges,
     performUndo,
     performRedo,
   } = useMindMapStore();
 
-  const {
-    activeSessionId,
-    getActiveSessionGraph,
-    getActiveSessionWireframes,
-    loadSessions,
-    saveGraphToSession,
-    saveWireframesToSession,
-    addUserMessage,
-    addAssistantMessage,
-    getConversationForAPI,
-  } = useChatStore();
-
-  const clearHistory = useHistoryStore((s) => s.clear);
+  const { activeSessionId, loadSessions, saveGraphToSession, storageError } =
+    useChatStore();
   const isAnimatingLayout = useHistoryStore((s) => s._isAnimatingLayout);
-  const wireframeStore = useWireframeStore();
 
-  // View mode: "system" (mind map) or "design" (wireframes)
-  const [viewMode, setViewMode] = useState<"system" | "design">("system");
+  // Shared connection tool: button, C shortcut or legacy toolbar drop.
+  const tool = useEditorStore((s) => s.tool);
+  const setTool = useEditorStore((s) => s.setTool);
+  const connectingMode = tool === "connect";
+  const setConnectingMode = useCallback(
+    (enabled: boolean) => setTool(enabled ? "connect" : "select"),
+    [setTool],
+  );
+  const [connectSource, setConnectSource] = useState<ConnectorEndpoint | null>(
+    null,
+  );
+  const [connectCursor, setConnectCursor] = useState<Point | null>(null);
+  const connectorEpoch = useRef<number | null>(null);
+  const directConnectEpoch = useRef<number | null>(null);
 
   // Node right-click context menu
   const [contextMenu, setContextMenu] = useState<{
@@ -103,31 +123,38 @@ export default function Canvas() {
   } | null>(null);
 
   // In-memory clipboard — not persisted across page reloads intentionally
-  const clipboard = useRef<{ nodes: MindMapNode[]; edges: MindMapEdge[] } | null>(null);
+  const clipboard = useRef<{
+    nodes: MindMapNode[];
+    edges: MindMapEdge[];
+  } | null>(null);
   // Track whether clipboard has content for re-render
   const [hasClipboard, setHasClipboard] = useState(false);
 
   // Alt+drag: maps nodeId → original position captured at drag start
   const altDragRef = useRef<Map<string, { x: number; y: number }> | null>(null);
 
-  // ── Session restore ──────────────────────────────────────────────────────────
+  useEffect(
+    () =>
+      useChatStore.subscribe((state, previous) => {
+        if (state.sessionEpoch === previous.sessionEpoch) return;
+        connectorEpoch.current = null;
+        directConnectEpoch.current = null;
+        flowStore.getState().cancelConnection();
+        useEditorStore.getState().setTool("select");
+        useEditorStore.getState().requestFit();
+        setConnectSource(null);
+        setContextMenu(null);
+        setCanvasContextMenu(null);
+      }),
+    [flowStore],
+  );
+
+  // The workspace bridge restores and saves synchronously at map boundaries.
   useEffect(() => {
+    const stop = initializeWorkspace();
     loadSessions();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!activeSessionId) return;
-    clearHistory();
-
-    const graph = getActiveSessionGraph();
-    if (graph && (graph.nodes.length > 0 || graph.edges.length > 0)) {
-      setNodesAndEdges(graph.nodes, graph.edges, true);
-    } else {
-      setNodesAndEdges([], [], true);
-    }
-
-    wireframeStore.loadWireframes(getActiveSessionWireframes());
-  }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+    return stop;
+  }, [loadSessions]);
 
   // ── Undo / Redo ──────────────────────────────────────────────────────────────
   const handleUndo = useCallback(() => {
@@ -146,7 +173,8 @@ export default function Canvas() {
   // specificNodeId: when triggered from right-click menu, copy that node
   // (+ other selected nodes if it's part of the selection)
   const handleCopy = useCallback((specificNodeId?: string) => {
-    const { nodes: currentNodes, edges: currentEdges } = useMindMapStore.getState();
+    const { nodes: currentNodes, edges: currentEdges } =
+      useMindMapStore.getState();
 
     let toCopy: MindMapNode[];
     if (specificNodeId) {
@@ -160,71 +188,103 @@ export default function Canvas() {
       toCopy = currentNodes.filter((n) => n.selected);
     }
 
-    if (toCopy.length === 0) return;
-
     const selectedIds = new Set(toCopy.map((n) => n.id));
     const internalEdges = currentEdges.filter(
-      (e) => selectedIds.has(e.source) && selectedIds.has(e.target)
+      (e) =>
+        (!specificNodeId && e.selected) ||
+        (selectedIds.has(e.source) && selectedIds.has(e.target)),
     );
 
-    clipboard.current = { nodes: toCopy, edges: internalEdges };
+    if (!toCopy.length && !internalEdges.length) return;
+    // An attached node outside the copied selection must not become a dangling
+    // reference when this clipboard is pasted into another map.
+    const copiedEdges = internalEdges.map((edge) => {
+      const geometry = connectorGeometry(edge, currentNodes);
+      const copy = { ...edge, data: { ...edge.data } };
+      for (const end of ["source", "target"] as const) {
+        if (edge[end] && !selectedIds.has(edge[end]) && geometry) {
+          copy[end] = "";
+          copy[`${end}Handle`] = null;
+          copy.data[`${end}Point`] = {
+            ...(end === "source" ? geometry.a : geometry.b),
+          };
+        }
+      }
+      return copy;
+    });
+    clipboard.current = { nodes: toCopy, edges: copiedEdges };
     setHasClipboard(true);
   }, []);
 
   // ── Paste ────────────────────────────────────────────────────────────────────
   // pasteAtFlowPos: optional flow-space position for right-click paste;
   // if omitted, pastes with a fixed PASTE_OFFSET from the originals.
-  const handlePaste = useCallback((pasteAtFlowPos?: { x: number; y: number }) => {
-    if (!clipboard.current) return;
-    const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current;
+  const handlePaste = useCallback(
+    (pasteAtFlowPos?: { x: number; y: number }) => {
+      if (!clipboard.current) return;
+      const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current;
 
-    const { nodes: currentNodes, edges: currentEdges } = useMindMapStore.getState();
+      const { nodes: currentNodes, edges: currentEdges } =
+        useMindMapStore.getState();
 
-    const idMap = new Map<string, string>();
+      const idMap = new Map<string, string>();
 
-    // Bounding-box top-left — used to anchor right-click paste at cursor
-    const minX = Math.min(...copiedNodes.map((n) => n.position.x));
-    const minY = Math.min(...copiedNodes.map((n) => n.position.y));
+      // Bounding-box top-left — used to anchor right-click paste at cursor
+      const bounds = documentBounds(copiedNodes, copiedEdges, currentNodes);
+      const minX = bounds.x,
+        minY = bounds.y;
 
-    const newNodes: MindMapNode[] = copiedNodes.map((n) => {
-      const newId = getNextNodeId();
-      idMap.set(n.id, newId);
+      const newNodes: MindMapNode[] = copiedNodes.map((n) => {
+        const newId = getNextNodeId();
+        idMap.set(n.id, newId);
 
-      const pos = pasteAtFlowPos
-        ? {
-            x: pasteAtFlowPos.x + (n.position.x - minX),
-            y: pasteAtFlowPos.y + (n.position.y - minY),
-          }
-        : {
-            x: n.position.x + PASTE_OFFSET,
-            y: n.position.y + PASTE_OFFSET,
-          };
+        const pos = pasteAtFlowPos
+          ? {
+              x: pasteAtFlowPos.x + (n.position.x - minX),
+              y: pasteAtFlowPos.y + (n.position.y - minY),
+            }
+          : {
+              x: n.position.x + PASTE_OFFSET,
+              y: n.position.y + PASTE_OFFSET,
+            };
 
-      return { ...n, id: newId, position: pos, selected: true, data: { ...n.data } };
-    });
+        return {
+          ...n,
+          id: newId,
+          position: pos,
+          selected: true,
+          data: { ...n.data },
+        };
+      });
 
-    // Deselect original nodes so pasted ones get visual focus
-    const deselectedOriginals = currentNodes.map((n) =>
-      n.selected ? { ...n, selected: false } : n
-    );
+      // Deselect original nodes so pasted ones get visual focus
+      const deselectedOriginals = currentNodes.map((n) =>
+        n.selected ? { ...n, selected: false } : n,
+      );
 
-    const newEdges: MindMapEdge[] = copiedEdges.map((e) => ({
-      ...e,
-      id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      source: idMap.get(e.source) ?? e.source,
-      target: idMap.get(e.target) ?? e.target,
-      selected: false,
-    }));
+      const newEdges: MindMapEdge[] = copiedEdges.map((e) => ({
+        ...translateEdgeGeometry(
+          e,
+          pasteAtFlowPos ? pasteAtFlowPos.x - minX : PASTE_OFFSET,
+          pasteAtFlowPos ? pasteAtFlowPos.y - minY : PASTE_OFFSET,
+        ),
+        id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        source: idMap.get(e.source) ?? e.source,
+        target: idMap.get(e.target) ?? e.target,
+        selected: true,
+      }));
 
-    setNodesAndEdges(
-      [...deselectedOriginals, ...newNodes],
-      [...currentEdges, ...newEdges]
-    );
+      setNodesAndEdges(
+        [...deselectedOriginals, ...newNodes],
+        [...currentEdges.map((e) => ({ ...e, selected: false })), ...newEdges],
+      );
 
-    // Persist
-    const { nodes: n, edges: e } = useMindMapStore.getState();
-    saveGraphToSession(n, e);
-  }, [setNodesAndEdges, saveGraphToSession]);
+      // Persist
+      const { nodes: n, edges: e } = useMindMapStore.getState();
+      saveGraphToSession(n, e);
+    },
+    [setNodesAndEdges, saveGraphToSession],
+  );
 
   // ── Alt/Option + drag to duplicate ──────────────────────────────────────────
   // Strategy: at drag START, create stay-copies at the current positions AND
@@ -232,18 +292,23 @@ export default function Canvas() {
   // original nodes (now free-floating) to wherever the user drops them.
   // Result: originals stay in place with all connections, copies follow cursor.
   const onNodeDragStart = useCallback(
-    (event: React.MouseEvent, _node: MindMapNode, draggedNodes: MindMapNode[]) => {
+    (
+      event: React.MouseEvent,
+      _node: MindMapNode,
+      draggedNodes: MindMapNode[],
+    ) => {
       if (!event.altKey) {
         altDragRef.current = null;
         return;
       }
 
       altDragRef.current = new Map(
-        draggedNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }])
+        draggedNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }]),
       );
 
       const draggedIds = new Set(draggedNodes.map((n) => n.id));
-      const { nodes: currentNodes, edges: currentEdges } = useMindMapStore.getState();
+      const { nodes: currentNodes, edges: currentEdges } =
+        useMindMapStore.getState();
       const idMap = new Map<string, string>();
 
       // 1. Create stay-copies at the current (pre-drag) positions
@@ -292,50 +357,93 @@ export default function Canvas() {
       // 3. Atomic update — full replace so edge re-pointing takes effect
       setNodesAndEdges(
         [...currentNodes, ...stayCopies],
-        [...updatedEdges, ...extraEdges]
+        [...updatedEdges, ...extraEdges],
+        useHistoryStore.getState()._isDragging,
       );
+      useHistoryStore.getState().setDragging(true);
     },
-    [setNodesAndEdges]
+    [setNodesAndEdges],
   );
 
-  const onNodeDragStop = useCallback(
-    (_event: React.MouseEvent, _node: MindMapNode, _draggedNodes: MindMapNode[]) => {
-      if (!altDragRef.current) return;
-      altDragRef.current = null;
-      // Stay-copies were already created at drag start — just persist final state
-      const { nodes: n, edges: e } = useMindMapStore.getState();
-      saveGraphToSession(n, e);
-    },
-    [saveGraphToSession]
-  );
+  const onNodeDragStop = useCallback(() => {
+    if (!altDragRef.current) return;
+    altDragRef.current = null;
+    // Stay-copies were already created at drag start — just persist final state
+    const { nodes: n, edges: e } = useMindMapStore.getState();
+    saveGraphToSession(n, e);
+  }, [saveGraphToSession]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        directConnectEpoch.current = null;
+        flowStore.getState().cancelConnection();
+      }
       const mod = e.metaKey || e.ctrlKey;
       const tag = (document.activeElement as HTMLElement)?.tagName;
-      const inText = tag === "INPUT" || tag === "TEXTAREA";
+      const inText =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        (document.activeElement as HTMLElement)?.isContentEditable;
+      if (inText) return;
 
       // Undo / Redo (always active)
-      if (mod && e.key === "z" && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
-      if ((mod && e.key === "z" && e.shiftKey) || (e.ctrlKey && e.key === "y")) {
-        e.preventDefault(); handleRedo(); return;
+      const key = e.key.toLowerCase();
+      if (mod && key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      if ((mod && key === "z" && e.shiftKey) || (e.ctrlKey && key === "y")) {
+        e.preventDefault();
+        handleRedo();
+        return;
       }
 
       // Copy / Paste — skip when user is typing in an input
       if (inText) return;
 
+      if (!mod && !e.altKey && ["c", "v", "h", "escape"].includes(key)) {
+        e.preventDefault();
+        setConnectSource(null);
+        setTool(key === "c" ? "connect" : key === "h" ? "hand" : "select");
+        return;
+      }
+
       if (mod && e.key === "a") {
         e.preventDefault();
-        const { nodes: allNodes, edges: allEdges, onNodesChange: nc, onEdgesChange: ec } = useMindMapStore.getState();
-        nc(allNodes.map((n) => ({ type: "select" as const, id: n.id, selected: true })));
-        ec(allEdges.map((edge) => ({ type: "select" as const, id: edge.id, selected: true })));
+        const {
+          nodes: allNodes,
+          edges: allEdges,
+          onNodesChange: nc,
+          onEdgesChange: ec,
+        } = useMindMapStore.getState();
+        nc(
+          allNodes.map((n) => ({
+            type: "select" as const,
+            id: n.id,
+            selected: true,
+          })),
+        );
+        ec(
+          allEdges.map((edge) => ({
+            type: "select" as const,
+            id: edge.id,
+            selected: true,
+          })),
+        );
         return;
       }
 
       if (mod && e.key === "c") {
-        const selected = useMindMapStore.getState().nodes.filter((n) => n.selected);
-        if (selected.length > 0) {
+        const selected = useMindMapStore
+          .getState()
+          .nodes.filter((n) => n.selected);
+        if (
+          selected.length > 0 ||
+          useMindMapStore.getState().edges.some((edge) => edge.selected)
+        ) {
           e.preventDefault();
           handleCopy();
         }
@@ -350,7 +458,18 @@ export default function Canvas() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleUndo, handleRedo, handleCopy, handlePaste]);
+  }, [handleUndo, handleRedo, handleCopy, handlePaste, setTool, flowStore]);
+
+  useEffect(
+    () =>
+      useEditorStore.subscribe((state, previous) => {
+        if (state.tool !== previous.tool) {
+          connectorEpoch.current = null;
+          setConnectSource(null);
+        }
+      }),
+    [],
+  );
 
   // ── Drag-and-drop from sidebar ───────────────────────────────────────────────
   const onDragOver = useCallback((event: DragEvent) => {
@@ -361,10 +480,26 @@ export default function Canvas() {
   const onDrop = useCallback(
     (event: DragEvent) => {
       event.preventDefault();
-      const type = event.dataTransfer.getData("application/mindmap-node-type") as NodeType;
+
+      // Connector tool — activate drawing mode instead of placing a node
+      const isConnector = event.dataTransfer.getData(
+        "application/mindmap-connector",
+      );
+      if (isConnector === "true") {
+        setConnectingMode(true);
+        setConnectSource(null);
+        return;
+      }
+
+      const type = event.dataTransfer.getData(
+        "application/mindmap-node-type",
+      ) as NodeType;
       if (!type || !NODE_TYPE_CONFIGS[type]) return;
 
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const position = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
       addNode({
         id: getNextNodeId(),
         type: "mindMapNode",
@@ -372,17 +507,80 @@ export default function Canvas() {
         data: { label: "", type, source: "manual" },
       });
     },
-    [screenToFlowPosition, addNode]
+    [screenToFlowPosition, addNode, setConnectingMode],
   );
+
+  const chooseEndpoint = useCallback(
+    (endpoint: ConnectorEndpoint) => {
+      if (!connectingMode) return;
+      if (!connectSource) {
+        setConnectSource(endpoint);
+        connectorEpoch.current = useChatStore.getState().sessionEpoch;
+      } else {
+        connectEndpoints(connectSource, endpoint, connectorEpoch.current ?? -1);
+        setConnectSource(null);
+        setConnectCursor(null);
+        setConnectingMode(false);
+      }
+    },
+    [connectingMode, connectSource, setConnectingMode],
+  );
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: MindMapNode) => {
+      if (node.type !== "connectorAnchor")
+        chooseEndpoint({ kind: "node", nodeId: node.id });
+    },
+    [chooseEndpoint],
+  );
+  const view = useMemo(() => connectorView(nodes, edges), [nodes, edges]);
+  const preview = useMemo(() => {
+    if (!connectSource || !connectCursor || !connectingMode) return null;
+    const connection = connectionFromEndpoints(
+      connectSource,
+      { kind: "point", point: connectCursor },
+      nodes,
+    );
+    if (!connection) return null;
+    const edge = {
+      id: "preview",
+      source: connection.source,
+      target: connection.target,
+      sourceHandle: connection.sourceHandle,
+      targetHandle: connection.targetHandle,
+      data: {
+        sourcePoint: connection.sourcePoint,
+        targetPoint: connection.targetPoint,
+      },
+    };
+    return connectorGeometry(edge, nodes);
+  }, [connectSource, connectCursor, connectingMode, nodes]);
+
+  // Esc cancels connecting mode
+  useEffect(() => {
+    if (!connectingMode) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setConnectingMode(false);
+        setConnectSource(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [connectingMode, setConnectingMode]);
 
   // ── Node right-click context menu ────────────────────────────────────────────
   const onNodeContextMenu: NodeMouseHandler<MindMapNode> = useCallback(
     (event, node) => {
       event.preventDefault();
       setCanvasContextMenu(null);
-      setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id, nodeLabel: node.data.label });
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        nodeId: node.id,
+        nodeLabel: node.data.label,
+      });
     },
-    []
+    [],
   );
 
   // ── Canvas (pane) right-click context menu ───────────────────────────────────
@@ -401,145 +599,172 @@ export default function Canvas() {
         flowY: flowPos.y,
       });
     },
-    [screenToFlowPosition]
+    [screenToFlowPosition],
   );
-
-  // ── Wireframe generation ─────────────────────────────────────────────────────
-  const handleGenerateWireframe = useCallback(async () => {
-    if (!contextMenu) return;
-
-    const rightClickedNode = nodes.find((n) => n.id === contextMenu.nodeId);
-    if (!rightClickedNode) return;
-
-    const selectedNodes = nodes.filter((n) => n.selected && n.id !== contextMenu.nodeId);
-    const targetNodes = [rightClickedNode, ...selectedNodes];
-    const allGeneric = targetNodes.every((n) => GENERIC_LABELS.has(n.data.label));
-
-    if (targetNodes.length === 1 && allGeneric) {
-      // Ask clarifying questions before generating
-      addUserMessage(
-        `I'd like to generate a wireframe for "${rightClickedNode.data.label}". What should this screen include?`
-      );
-      addAssistantMessage(
-        `Great choice! To create a useful wireframe for **"${rightClickedNode.data.label}"**, I need a bit more context:\n\n` +
-        `- What type of screen is this? (e.g., login page, dashboard, settings panel)\n` +
-        `- What are the key UI elements it should have? (forms, tables, cards, navigation)\n` +
-        `- Any specific sections or features to include?\n\n` +
-        `Tell me more and then click **"Generate Wireframe"** when you're ready!`
-      );
-      window.dispatchEvent(
-        new CustomEvent("pending-wireframe", {
-          detail: { nodeIds: targetNodes.map((n) => n.id) },
-        })
-      );
-      return;
-    }
-
-    wireframeStore.setGenerating(true);
-    setViewMode("design");
-
-    try {
-      const response = await fetch("/api/wireframe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetNodes: targetNodes.map((n) => ({ id: n.id, label: n.data.label, type: n.data.type })),
-          allNodes: nodes,
-          allEdges: edges,
-          conversation: getConversationForAPI(),
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || `HTTP ${response.status}`);
-      }
-
-      const { html, title } = await response.json();
-
-      const wireframe = {
-        id: `wf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        title,
-        sourceNodeIds: targetNodes.map((n) => n.id),
-        html,
-        createdAt: Date.now(),
-      };
-
-      wireframeStore.addWireframe(wireframe);
-      saveWireframesToSession(useWireframeStore.getState().wireframes);
-      addAssistantMessage(`Wireframe **"${title}"** generated! Switch to the **Design** tab to view it.`);
-    } catch (err) {
-      console.error("Wireframe generation failed:", err);
-      addAssistantMessage(
-        `Failed to generate wireframe: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
-    } finally {
-      wireframeStore.setGenerating(false);
-    }
-  }, [
-    contextMenu, nodes, edges, wireframeStore,
-    addUserMessage, addAssistantMessage, getConversationForAPI, saveWireframesToSession,
-  ]);
 
   return (
     <div
       ref={reactFlowWrapper}
       className="w-full h-screen relative"
       data-animating-layout={isAnimatingLayout ? "true" : "false"}
+      onPointerDownCapture={(event) => {
+        // Capture modifiers on this gesture before React Flow handles selection.
+        // This also works when a host did not deliver a separate Shift keydown.
+        flowStore.setState({ multiSelectionActive: event.shiftKey });
+      }}
+      style={connectingMode ? { cursor: "crosshair" } : undefined}
     >
+      {storageError && (
+        <div
+          role="alert"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-lg rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          {storageError}
+        </div>
+      )}
       <Sidebar />
-      <ChatPanel />
+      <ChatPanel key={activeSessionId} />
+
+      {/* Connector drawing mode banner */}
+      {connectingMode && (
+        <div
+          role="status"
+          className="absolute top-4 left-1/2 -translate-x-1/2 z-30 pointer-events-none"
+        >
+          <div className="flex items-center gap-2 bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg shadow-lg">
+            <svg width="14" height="8" viewBox="0 0 14 8" fill="none">
+              <line
+                x1="1"
+                y1="4"
+                x2="11"
+                y2="4"
+                stroke="white"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+              <polyline
+                points="8,1 11,4 8,7"
+                stroke="white"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {connectSource
+              ? "Click the target node or canvas — Esc to cancel"
+              : "Click the source node or canvas — Esc to cancel"}
+          </div>
+        </div>
+      )}
 
       {/* System view */}
-      <div className="w-full h-full" style={{ display: viewMode === "system" ? "block" : "none" }}>
+      <div className="w-full h-full">
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={view.nodes}
+          edges={view.edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
+          onConnectStart={() => {
+            directConnectEpoch.current = useChatStore.getState().sessionEpoch;
+          }}
+          onConnect={(connection) => {
+            if (
+              directConnectEpoch.current ===
+              useChatStore.getState().sessionEpoch
+            )
+              onConnect(connection);
+          }}
+          onConnectEnd={() => {
+            directConnectEpoch.current = null;
+          }}
+          edgesReconnectable={false}
+          nodesDraggable={tool === "select"}
           onDragOver={onDragOver}
           onDrop={onDrop}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          onNodeClick={onNodeClick}
+          onPaneClick={(event) =>
+            chooseEndpoint({
+              kind: "point",
+              point: screenToFlowPosition({
+                x: event.clientX,
+                y: event.clientY,
+              }),
+            })
+          }
+          onPaneMouseMove={(event) => {
+            if (connectingMode)
+              setConnectCursor(
+                screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+              );
+          }}
+          onNodeMouseMove={(event) => {
+            if (connectingMode)
+              setConnectCursor(
+                screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+              );
+          }}
           onNodeContextMenu={onNodeContextMenu}
           onPaneContextMenu={onPaneContextMenu}
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
           connectionMode={ConnectionMode.Loose}
+          connectOnClick={false}
           fitView
-          panOnDrag={[1, 2]}
+          minZoom={0.01}
+          maxZoom={3}
+          panOnDrag={tool === "hand" ? true : [1, 2]}
           panOnScroll
           zoomOnScroll={false}
           zoomOnPinch
-          selectionOnDrag
+          selectionOnDrag={tool === "select"}
+          multiSelectionKeyCode="Shift"
+          zoomOnDoubleClick={false}
           selectionMode={SelectionMode.Partial}
+          onBeforeDelete={async ({
+            nodes: removedNodes,
+            edges: removedEdges,
+          }) => {
+            const nodeIds = new Set(removedNodes.map((n) => n.id));
+            const edgeIds = new Set(removedEdges.map((e) => e.id));
+            const current = useMindMapStore.getState();
+            current.setNodesAndEdges(
+              current.nodes.filter((n) => !nodeIds.has(n.id)),
+              current.edges.filter(
+                (e) =>
+                  !edgeIds.has(e.id) &&
+                  !nodeIds.has(e.source) &&
+                  !nodeIds.has(e.target),
+              ),
+            );
+            return false;
+          }}
           deleteKeyCode={["Backspace", "Delete"]}
           className="bg-gray-50"
           defaultEdgeOptions={{ type: "editable" }}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-          <Controls />
-          <MiniMap
-            nodeColor={(node) => {
-              const data = node.data as unknown as { type: NodeType; color?: string };
-              return getNodeVisualConfig(data.type, data.color).color;
-            }}
-            maskColor="rgba(0,0,0,0.1)"
-          />
         </ReactFlow>
       </div>
 
-      {/* Design view — hidden while automotive vertical is in development */}
-      {/* {viewMode === "design" && <DesignView />} */}
-
-      {/* View mode toggle — hidden while automotive vertical is in development */}
-      {/* <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
-        <div className="bg-white/95 backdrop-blur-sm border rounded-full shadow-lg p-1 flex items-center gap-0.5">
-          <button onClick={() => setViewMode("system")} ...>System</button>
-          <button onClick={() => setViewMode("design")} ...>Design</button>
-        </div>
-      </div> */}
+      {preview && (
+        <svg
+          aria-label="Connection preview"
+          className="absolute inset-0 w-full h-full pointer-events-none z-10"
+        >
+          <g transform={`translate(${viewportX} ${viewportY}) scale(${zoom})`}>
+            <path
+              d={roundedPath(preview.points)}
+              fill="none"
+              stroke="#2563eb"
+              strokeWidth={2 / zoom}
+              strokeDasharray={`${6 / zoom} ${4 / zoom}`}
+            />
+          </g>
+        </svg>
+      )}
+      <CanvasNavigation wrapper={reactFlowWrapper} />
 
       {/* Node context menu */}
       {contextMenu && (
@@ -549,7 +774,6 @@ export default function Canvas() {
           nodeId={contextMenu.nodeId}
           nodeLabel={contextMenu.nodeLabel}
           onCopy={() => handleCopy(contextMenu.nodeId)}
-          onGenerateWireframe={handleGenerateWireframe}
           onClose={() => setContextMenu(null)}
         />
       )}
@@ -560,7 +784,12 @@ export default function Canvas() {
           x={canvasContextMenu.x}
           y={canvasContextMenu.y}
           canPaste={hasClipboard}
-          onPaste={() => handlePaste({ x: canvasContextMenu.flowX, y: canvasContextMenu.flowY })}
+          onPaste={() =>
+            handlePaste({
+              x: canvasContextMenu.flowX,
+              y: canvasContextMenu.flowY,
+            })
+          }
           onClose={() => setCanvasContextMenu(null)}
         />
       )}

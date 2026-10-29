@@ -146,10 +146,15 @@
       return;
     }
 
-    if (!Array.isArray(data.nodes) || data.nodes.length === 0) {
+    const finitePoint = (point) => point && Number.isFinite(point.x) && Number.isFinite(point.y);
+    const freeDrawing = Array.isArray(data.edges) && data.edges.length > 0 && data.edges.every(
+      (edge) => edge && edge.source === "" && edge.target === "" &&
+        finitePoint(edge.sourcePoint) && finitePoint(edge.targetPoint)
+    );
+    if (!Array.isArray(data.nodes) || (data.nodes.length === 0 && !freeDrawing)) {
       textarea.classList.add("error");
       preview.classList.add("error");
-      preview.textContent = "No nodes found in the payload.";
+      preview.textContent = "Add nodes or valid free connectors to the payload.";
       return;
     }
 

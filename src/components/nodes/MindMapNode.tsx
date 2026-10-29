@@ -1,197 +1,195 @@
 "use client";
-
 import { memo, useState, useCallback, useRef, useEffect } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, Position, useViewport, type NodeProps } from "@xyflow/react";
 import type { MindMapNodeData } from "@/store/mindmap-store";
-import { getNodeVisualConfig } from "./node-config";
 import { useMindMapStore } from "@/store/mindmap-store";
-import NodeStyleToolbar from "./NodeStyleToolbar";
+import { nodeSize } from "@/lib/canvas-geometry";
+import { getNodeVisualConfig } from "./node-config";
 
 function MindMapNodeComponent({ id, data, selected }: NodeProps) {
-  const nodeData = data as unknown as MindMapNodeData;
-  const config = getNodeVisualConfig(nodeData.type, nodeData.color, nodeData.icon);
+  const nodeData = data as MindMapNodeData;
+  const config = getNodeVisualConfig(
+    nodeData.type,
+    nodeData.color,
+    nodeData.icon,
+  );
+  const size = nodeSize({ data: nodeData });
+  const { zoom } = useViewport();
+  const connectedToSelection = useMindMapStore((state) => {
+    const selectedIds = new Set(
+      state.nodes.filter((node) => node.selected).map((node) => node.id),
+    );
+    return state.edges.some(
+      (edge) =>
+        (edge.source === id && selectedIds.has(edge.target)) ||
+        (edge.target === id && selectedIds.has(edge.source)),
+    );
+  });
+  const showConnectionContext = connectedToSelection && !selected;
   const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(nodeData.label);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const updateNodeLabel = useMindMapStore((s) => s.updateNodeLabel);
-
+  const [value, setValue] = useState(nodeData.label);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const cancelled = useRef(false);
+  const updateLabel = useMindMapStore((s) => s.updateNodeLabel);
   useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+    if (editing) {
+      input.current?.focus();
+      input.current?.select();
     }
   }, [editing]);
-
-  const handleDoubleClick = useCallback(() => {
-    setEditValue(nodeData.label);
-    setEditing(true);
-  }, [nodeData.label]);
-
-  const handleBlur = useCallback(() => {
+  const commit = useCallback(() => {
     setEditing(false);
-    if (editValue.trim()) {
-      updateNodeLabel(id, editValue.trim());
-    }
-  }, [id, editValue, updateNodeLabel]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
-        handleBlur();
-      }
-      if (e.key === "Escape") {
-        setEditing(false);
-        setEditValue(nodeData.label);
-      }
-    },
-    [handleBlur, nodeData.label]
-  );
-
-  const proposalHighlight = nodeData.proposalHighlight as "update" | "remove" | undefined;
-  const highlightClass = proposalHighlight === "update"
-    ? "proposal-highlight-update"
-    : proposalHighlight === "remove"
-    ? "proposal-highlight-remove"
-    : "";
-
-  const isDiamond = config.shape === "diamond";
-  const handleClass = "!w-3 !h-3 !bg-blue-500 !border-2 !border-white node-handle";
-
-  if (isDiamond) {
-    return (
-      <div
-        className={`relative flex items-center justify-center ${highlightClass}`}
-        style={{ width: 120, height: 120 }}
-        onDoubleClick={handleDoubleClick}
-      >
-        {selected && (
-          <NodeStyleToolbar
-            nodeId={id}
-            currentColor={nodeData.color}
-            currentIcon={nodeData.icon}
-            currentType={nodeData.type}
-          />
-        )}
-        {/* Diamond shape via clip-path — no rotation needed */}
-        <div
-          className={`absolute inset-0 ${
-            selected ? "drop-shadow-lg" : ""
-          }`}
-          style={{
-            clipPath: "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)",
-            backgroundColor: config.bgColor,
-            border: "none",
-          }}
-        />
-        {/* Border: slightly larger diamond behind */}
-        <div
-          className="absolute"
-          style={{
-            inset: -2,
-            clipPath: "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)",
-            backgroundColor: selected ? "#60a5fa" : config.borderColor,
-          }}
-        />
-        <div
-          className="absolute inset-0"
-          style={{
-            clipPath: "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)",
-            backgroundColor: config.bgColor,
-          }}
-        />
-
-        {/* Content */}
-        <div className="relative z-10 flex flex-col items-center gap-1 text-center px-4">
-          <span className="text-xs opacity-60 select-none">{config.icon}</span>
-          {editing ? (
-            <input
-              ref={inputRef}
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onBlur={handleBlur}
-              onKeyDown={handleKeyDown}
-              className="bg-transparent border-b border-current text-sm text-center outline-none w-full min-w-[60px]"
-              style={{ color: config.color }}
-            />
-          ) : (
-            <span
-              className="text-sm font-medium max-w-[80px] break-words"
-              style={{ color: config.color }}
-            >
-              {nodeData.label}
-            </span>
-          )}
-        </div>
-
-        {/* Handles at all 4 tips of the diamond */}
-        <Handle type="source" position={Position.Top} id="top" className={handleClass} />
-        <Handle type="source" position={Position.Right} id="right" className={handleClass} />
-        <Handle type="source" position={Position.Bottom} id="bottom" className={handleClass} />
-        <Handle type="source" position={Position.Left} id="left" className={handleClass} />
-      </div>
-    );
-  }
-
-  // Non-diamond shapes
-  const shapeClasses = (() => {
-    switch (config.shape) {
-      case "circle":
-        return "rounded-full min-w-[100px] min-h-[100px] flex items-center justify-center";
-      case "rounded-rect":
-        return "rounded-2xl min-w-[120px] min-h-[60px] flex items-center justify-center";
-      case "rectangle":
-      default:
-        return "rounded-md min-w-[120px] min-h-[60px] flex items-center justify-center";
-    }
-  })();
-
+    if (!cancelled.current && value.trim() && value.trim() !== nodeData.label)
+      updateLabel(id, value.trim());
+  }, [id, nodeData.label, value, updateLabel]);
+  const diamond = nodeData.type === "diamond",
+    square = diamond || nodeData.type === "circle";
+  const highlight = nodeData.proposalHighlight;
   return (
     <div
-      className={`relative px-4 py-3 border-2 shadow-sm transition-shadow ${shapeClasses} ${
-        selected && !proposalHighlight ? "shadow-lg ring-2 ring-blue-400" : ""
-      } ${highlightClass}`}
-      style={{
-        backgroundColor: config.bgColor,
-        borderColor: proposalHighlight ? undefined : config.borderColor,
-      }}
-      onDoubleClick={handleDoubleClick}
+      className="relative"
+      style={size}
+      aria-description={
+        showConnectionContext
+          ? "Directly connected to a selected node"
+          : undefined
+      }
     >
-      {selected && (
-        <NodeStyleToolbar
-          nodeId={id}
-          currentColor={nodeData.color}
-          currentIcon={nodeData.icon}
-          currentType={nodeData.type}
-        />
-      )}
-      <Handle type="source" position={Position.Top} id="top" className={handleClass} />
-      <Handle type="source" position={Position.Right} id="right" className={handleClass} />
-      <Handle type="source" position={Position.Bottom} id="bottom" className={handleClass} />
-      <Handle type="source" position={Position.Left} id="left" className={handleClass} />
-
-      <div className="flex flex-col items-center gap-1 text-center">
-        <span className="text-xs opacity-60 select-none">{config.icon}</span>
-        {editing ? (
-          <input
-            ref={inputRef}
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            className="bg-transparent border-b border-current text-sm text-center outline-none w-full min-w-[60px]"
-            style={{ color: config.color }}
-          />
-        ) : (
-          <span
-            className="text-sm font-medium max-w-[150px] break-words"
-            style={{ color: config.color }}
-          >
-            {nodeData.label}
-          </span>
+      <div
+        className={`relative flex items-center justify-center border-2 shadow-sm ${selected ? "ring-2 ring-blue-400" : ""} ${highlight ? `proposal-highlight-${highlight}` : ""}`}
+        style={{
+          ...size,
+          boxSizing: "border-box",
+          borderRadius: diamond
+            ? 0
+            : nodeData.type === "circle"
+              ? "50%"
+              : nodeData.type === "rounded-rect"
+                ? 16
+                : 6,
+          borderColor: diamond
+            ? "transparent"
+            : showConnectionContext
+              ? "#93c5fd"
+              : config.borderColor,
+          background: diamond ? "transparent" : config.bgColor,
+        }}
+        onDoubleClick={() => {
+          cancelled.current = false;
+          setValue(nodeData.label);
+          setEditing(true);
+        }}
+      >
+        {diamond && (
+          <>
+            <div
+              className="absolute"
+              style={{
+                inset: -2,
+                clipPath: "polygon(50% 0,100% 50%,50% 100%,0 50%)",
+                background: selected
+                  ? "#60a5fa"
+                  : showConnectionContext
+                    ? "#93c5fd"
+                    : config.borderColor,
+              }}
+            />
+            <div
+              className="absolute inset-0"
+              style={{
+                clipPath: "polygon(50% 0,100% 50%,50% 100%,0 50%)",
+                background: config.bgColor,
+              }}
+            />
+          </>
         )}
+        <div
+          className="relative flex flex-col items-center justify-center gap-1"
+          style={{
+            width: square ? 120 : size.width - 32,
+            color: "#1f2937",
+            fontSize: 14,
+            lineHeight: "20px",
+            textAlign: "center",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {(nodeData.role === "suggestion" || nodeData.role === "question") && (
+            <span className="text-[10px] uppercase tracking-wide text-gray-500">
+              {nodeData.role === "question" ? "Open question" : "Suggested"}
+            </span>
+          )}
+          {nodeData.icon && <span aria-hidden="true">{nodeData.icon}</span>}
+          {editing ? (
+            <textarea
+              ref={input}
+              aria-label="Node label"
+              className="nodrag nopan resize-none w-full bg-transparent outline-none ring-1 ring-blue-300 rounded"
+              style={{
+                height: Math.max(
+                  20,
+                  size.height - (square ? size.height * 0.5 : 32),
+                ),
+                font: "inherit",
+                textAlign: "center",
+              }}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  commit();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelled.current = true;
+                  setEditing(false);
+                }
+              }}
+            />
+          ) : (
+            <span>{nodeData.label}</span>
+          )}
+        </div>
       </div>
+      {[Position.Top, Position.Right, Position.Bottom, Position.Left].map(
+        (side) => (
+          <Handle
+            key={side}
+            type="source"
+            position={side}
+            id={side}
+            title={`Connect from ${side}`}
+            className="node-handle !bg-transparent !border-0 flex items-center justify-center"
+            style={{
+              width: 1,
+              height: 1,
+              minWidth: 1,
+              minHeight: 1,
+              visibility: zoom < 0.65 ? "hidden" : "visible",
+            }}
+          >
+            <span
+              className="absolute flex items-center justify-center"
+              style={{
+                width: 24 / zoom,
+                height: 24 / zoom,
+                left: "50%",
+                top: "50%",
+                transform: "translate(-50%,-50%)",
+              }}
+            >
+              <span
+                className="rounded-full bg-blue-500 border border-white pointer-events-none"
+                style={{ width: 8 / zoom, height: 8 / zoom }}
+              />
+            </span>
+          </Handle>
+        ),
+      )}
     </div>
   );
 }
-
 export default memo(MindMapNodeComponent);
