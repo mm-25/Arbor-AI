@@ -718,3 +718,8 @@ Direct browser checks used the existing four-node sample: selecting Product high
 ## Release target and packaging — October 29
 
 The existing production target is https://arbor-ai.vercel.app, connected to the `main` branch of `mm-25/Arbor-AI`. The user authorized publication of the accumulated local foundation/editor version. GitHub's only newer remote commit updates the old README production link; retain that history while applying the intentional README removals and the existing four-document structure. Local `artifacts/` browser captures and JSON recovery fixtures are now ignored for release packaging. Their references in these documents are local evidence locations. Runtime credentials remain server-only environment variables and `.env.local` remains ignored; it is not part of the GitHub release. Production chat/generation/report routes require `ANTHROPIC_API_KEY`, optionally `ANTHROPIC_MODEL`; recorded voice input additionally uses `GROQ_API_KEY`.
+
+
+### Production configuration activation — October 30
+
+GitHub release `f69dc58694dfd4ab75866beacdf06e69e390db5b` reached Vercel Production successfully on October 29. The initial deployed chat check returned the explicit missing-`ANTHROPIC_API_KEY` error, distinguishing deployment success from AI availability. The user confirmed saving the production environment variable on October 30. A new Git-triggered production deployment is required to activate it; this documentation-only release trigger preserves the application source. Verify the public `/api/chat` and `/api/generate` routes after Vercel finishes, using small synthetic inputs and recording only response status, model, usage and graph integrity. The credential remains in Vercel’s environment settings.
